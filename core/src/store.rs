@@ -36,9 +36,9 @@ impl Store {
         Ok(())
     }
 
-    pub async fn set_selected(&self, id: i64, selected: bool) -> Result<()> {
-        self.0.execute("UPDATE chats SET selected=?2 WHERE id=?1", params![id, selected as i64]).await?;
-        Ok(())
+    /// Returns false if the chat is unknown (run `chats` first).
+    pub async fn set_selected(&self, id: i64, selected: bool) -> Result<bool> {
+        Ok(self.0.execute("UPDATE chats SET selected=?2 WHERE id=?1", params![id, selected as i64]).await? > 0)
     }
 
     /// (id, title, selected)
@@ -137,7 +137,8 @@ mod tests {
         assert_eq!(s.tracks("").await.unwrap().len(), 2);
         s.set_cursor(1, 5).await.unwrap();
         assert_eq!(s.cursor(1).await.unwrap(), 5);
-        s.set_selected(1, true).await.unwrap();
+        assert!(s.set_selected(1, true).await.unwrap());
+        assert!(!s.set_selected(99, true).await.unwrap());
         assert_eq!(s.selected_chats().await.unwrap(), vec![1]);
     }
 }

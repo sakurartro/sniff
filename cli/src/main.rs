@@ -26,7 +26,9 @@ async fn main() -> Result<()> {
     // offline commands first: no network needed
     match cmd {
         "select" | "unselect" => {
-            store.set_selected(args[1].parse()?, cmd == "select").await?;
+            if !store.set_selected(args[1].parse()?, cmd == "select").await? {
+                anyhow::bail!("unknown chat id: run `chats` first and use an id from its list");
+            }
             return Ok(());
         }
         "songs" => {
@@ -85,7 +87,11 @@ async fn main() -> Result<()> {
         }
         "sync" => {
             let pages: usize = args.get(1).map(|p| p.parse()).transpose()?.unwrap_or(1);
-            for chat in store.selected_chats().await? {
+            let chats = store.selected_chats().await?;
+            if chats.is_empty() {
+                println!("no chats selected: run `chats`, then `select <id>`");
+            }
+            for chat in chats {
                 for _ in 0..pages {
                     let (new, end) = tg.backfill_page(&store, chat, 100).await?;
                     println!("chat {chat}: +{new} tracks{}", if end { " (history done)" } else { "" });
