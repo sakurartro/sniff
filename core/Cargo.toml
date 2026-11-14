@@ -1,0 +1,16 @@
+[package]
+name = "tgkiku-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+grammers-client = "0.12.0"
+grammers-mtsender = "0.12.0"
+grammers-session = "0.12.0"
+libsql = { version = "0.10", default-features = false, features = ["core"] }
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

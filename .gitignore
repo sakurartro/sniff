@@ -1,0 +1,5 @@
+target/
+.tgkiku/
+*.session
+*.sqlite
+.env
