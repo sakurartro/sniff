@@ -45,6 +45,26 @@ async fn main() -> Result<()> {
     let tg = Tg::connect(dir.join("session.sqlite"), ApiKeys::resolve(user)?).await?;
 
     match cmd {
+        "login-link" => {
+            if tg.is_authorized().await? {
+                println!("already logged in");
+                return Ok(());
+            }
+            println!("Open the link on a phone with Telegram, or scan the QR from another device (Settings > Devices).");
+            let r = tg
+                .login_by_token(|link| {
+                    if let Ok(q) = qrcode::QrCode::new(link) {
+                        println!("{}", q.render::<qrcode::render::unicode::Dense1x2>().build());
+                    }
+                    println!("{link}\n");
+                })
+                .await?;
+            if let SignIn::PasswordRequired(p) = r {
+                tg.check_password(p, &prompt("2FA password (echoed!): ")?).await?;
+            }
+            println!("ok");
+        }
+        "probe" => println!("{}", tg.probe_code(&args[1]).await?),
         "login" => {
             if tg.is_authorized().await? {
                 println!("already logged in");

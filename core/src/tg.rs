@@ -3,7 +3,8 @@ use crate::store::{Store, Track};
 use anyhow::{anyhow, Result};
 use grammers_client::{media::Media, Client, SignInError};
 use grammers_mtsender::SenderPool;
-use grammers_session::{storages::SqliteSession, types::PeerId};
+use grammers_session::{storages::SqliteSession, types::PeerId, Session};
+use grammers_mtsender::SenderPoolFatHandle;
 use std::{path::Path, sync::Arc, time::Duration};
 
 pub use grammers_client::client::LoginToken;
@@ -17,18 +18,20 @@ pub enum SignIn {
 pub struct Tg {
     client: Client,
     keys: ApiKeys,
+    session: Arc<SqliteSession>,
+    handle: SenderPoolFatHandle,
     _pool: tokio::task::JoinHandle<()>,
 }
 
 impl Tg {
     pub async fn connect(session_file: impl AsRef<Path>, keys: ApiKeys) -> Result<Self> {
         let session = Arc::new(SqliteSession::open(session_file.as_ref()).await?);
-        let SenderPool { runner, handle, .. } = SenderPool::new(session, keys.id);
-        let client = Client::new(handle);
+        let SenderPool { runner, handle, .. } = SenderPool::new(Arc::clone(&session), keys.id);
+        let client = Client::new(handle.clone());
         let pool = tokio::spawn(async move {
             let _ = runner.run().await;
         });
-        Ok(Self { client, keys, _pool: pool })
+        Ok(Self { client, keys, session, handle, _pool: pool })
     }
 
     pub async fn is_authorized(&self) -> Result<bool> {
@@ -37,6 +40,60 @@ impl Tg {
 
     pub async fn request_code(&self, phone: &str) -> Result<LoginToken> {
         Ok(self.client.request_login_code(phone, &self.keys.hash).await?)
+    }
+
+    /// Debug: send a login code and report how Telegram says it was delivered (the token is discarded).
+    pub async fn probe_code(&self, phone: &str) -> Result<String> {
+        use grammers_client::tl;
+        let req = tl::functions::auth::SendCode {
+            phone_number: phone.into(),
+            api_id: self.keys.id,
+            api_hash: self.keys.hash.clone(),
+            settings: tl::types::CodeSettings { allow_flashcall: false, current_number: false, allow_app_hash: false, allow_missed_call: false, allow_firebase: false, logout_tokens: None, token: None, app_sandbox: None, unknown_number: false }.into(),
+        };
+        let r = self.client.invoke(&req).await;
+        Ok(match r {
+            Ok(tl::enums::auth::SentCode::Code(c)) => format!("type={:?} next={:?} timeout={:?}", c.r#type, c.next_type, c.timeout),
+            Ok(other) => format!("{other:?}"),
+            Err(e) => format!("error: {e:?}"),
+        })
+    }
+
+    /// Log in by approving from an already logged-in Telegram app (no SMS/app code needed).
+    /// `on_link` gets a `tg://login?token=...` link each time the token changes: show it as a QR
+    /// (other device) or open it directly on the same phone.
+    pub async fn login_by_token(&self, on_link: impl Fn(&str)) -> Result<SignIn> {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
+        use grammers_client::tl::{self, enums::auth::LoginToken as LT};
+        let export = tl::functions::auth::ExportLoginToken { api_id: self.keys.id, api_hash: self.keys.hash.clone(), except_ids: vec![] };
+        let mut last = vec![];
+        loop {
+            match self.client.invoke(&export).await {
+                Ok(LT::Token(t)) => {
+                    if t.token != last {
+                        on_link(&format!("tg://login?token={}", B64.encode(&t.token)));
+                        last = t.token;
+                    }
+                }
+                Ok(LT::MigrateTo(m)) => {
+                    // account lives on another DC: move home there and import the token
+                    let old = self.session.home_dc_id()?;
+                    self.handle.disconnect_from_dc(old);
+                    self.session.set_home_dc_id(m.dc_id).await?;
+                    if let LT::Success(_) = self.client.invoke(&tl::functions::auth::ImportLoginToken { token: m.token }).await? {
+                        return Ok(SignIn::Done);
+                    }
+                }
+                Ok(LT::Success(_)) => return Ok(SignIn::Done),
+                Err(grammers_client::InvocationError::Rpc(e)) if e.name == "SESSION_PASSWORD_NEEDED" => {
+                    let p = self.client.invoke(&tl::functions::account::GetPassword {}).await?;
+                    let tl::enums::account::Password::Password(p) = p;
+                    return Ok(SignIn::PasswordRequired(PasswordToken::new(p)));
+                }
+                Err(e) => return Err(anyhow!("token login failed: {e}")),
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
     }
 
     pub async fn sign_in(&self, token: &LoginToken, code: &str) -> Result<SignIn> {
