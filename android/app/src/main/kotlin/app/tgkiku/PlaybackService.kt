@@ -1,6 +1,8 @@
 package app.tgkiku
 
 import android.content.Context
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -13,7 +15,11 @@ object Shared {
     var onNext: (() -> Unit)? = null
     var onPrev: (() -> Unit)? = null
 
-    fun player(c: Context): ExoPlayer = exo ?: ExoPlayer.Builder(c.applicationContext).build().also { exo = it }
+    fun player(c: Context): ExoPlayer = exo ?: ExoPlayer.Builder(c.applicationContext)
+        .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
+        .setHandleAudioBecomingNoisy(true)
+        .setWakeMode(C.WAKE_MODE_LOCAL)
+        .build().also { exo = it }
 }
 
 class PlaybackService : MediaSessionService() {
@@ -29,7 +35,7 @@ class PlaybackService : MediaSessionService() {
             override fun seekToNext() { Shared.onNext?.invoke() }
             override fun seekToPrevious() { Shared.onPrev?.invoke() }
         }
-        session = MediaSession.Builder(this, p).build()
+        session = MediaSession.Builder(this, p).build().also { addSession(it) }
     }
 
     override fun onGetSession(info: MediaSession.ControllerInfo) = session
