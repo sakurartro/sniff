@@ -16,12 +16,13 @@ android {
         ndk { abiFilters += "arm64-v8a" }
     }
     signingConfigs {
-        // Fixed key committed to the repo so every CI build is signed the same and installs over the old one.
-        getByName("debug") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android"
+        // CI decodes the key from GitHub Secrets to android/app/release.jks; without it we fall back to the default debug key.
+        if (file("release.jks").exists()) create("ci") {
+            storeFile = file("release.jks")
+            storePassword = System.getenv("SIGN_PASSWORD"); keyAlias = "tgkiku"; keyPassword = System.getenv("SIGN_PASSWORD")
         }
     }
+    buildTypes { getByName("debug") { signingConfigs.findByName("ci")?.let { signingConfig = it } } }
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

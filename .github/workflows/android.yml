@@ -20,6 +20,10 @@ jobs:
         run: cargo run -p uniffi-bindgen -- generate --library target/aarch64-linux-android/release/libtgkiku_ffi.so --language kotlin --no-format --out-dir android/app/src/main/java
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: 8.10.2 }
+      - name: Signing key
+        run: echo "${{ secrets.SIGN_KEYSTORE_B64 }}" | base64 -d > android/app/release.jks
       - run: gradle -p android assembleDebug
+        env:
+          SIGN_PASSWORD: ${{ secrets.SIGN_PASSWORD }}
       - uses: actions/upload-artifact@v4
         with: { name: tgkiku-debug, path: android/app/build/outputs/apk/debug/app-debug.apk }
