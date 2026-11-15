@@ -448,6 +448,8 @@ fun NowPlaying(vm: Vm, close: () -> Unit) {
         Art(t, Modifier.fillMaxWidth().aspectRatio(1f), 14.dp)
         Spacer(Modifier.height(28.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
+            Ico("x", 30.dp, MaterialTheme.colorScheme.onSurfaceVariant, Modifier.clickable { vm.dismiss() })
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(t.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(t.performer.ifBlank { "Неизвестный исполнитель" }, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary, maxLines = 1)
@@ -475,7 +477,14 @@ fun NowPlaying(vm: Vm, close: () -> Unit) {
         }
         var showQueue by remember { mutableStateOf(false) }
         Spacer(Modifier.weight(1f))
-        Ico("queue", 28.dp, MaterialTheme.colorScheme.onBackground, Modifier.align(Alignment.End).clickable { showQueue = true })
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            vm.undo?.let { u ->
+                Text("«${u.title}» убрано из медиатеки", Modifier.weight(1f, fill = false), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                TextButton({ vm.restore() }) { Text("Вернуть") }
+            }
+            Spacer(Modifier.weight(1f))
+            Ico("queue", 28.dp, MaterialTheme.colorScheme.onBackground, Modifier.clickable { showQueue = true })
+        }
         if (showQueue) QueueSheet(vm) { showQueue = false }
     }
 }
@@ -582,6 +591,10 @@ fun Ico(kind: String, size: Dp, color: Color, modifier: Modifier = Modifier) {
                     close()
                 }
                 if (kind == "heart") drawPath(p, color) else drawPath(p, color, style = Stroke(0.07f * w, join = StrokeJoin.Round))
+            }
+            "x" -> {
+                drawLine(color, Offset(0.25f * w, 0.25f * w), Offset(0.75f * w, 0.75f * w), 0.07f * w, StrokeCap.Round)
+                drawLine(color, Offset(0.75f * w, 0.25f * w), Offset(0.25f * w, 0.75f * w), 0.07f * w, StrokeCap.Round)
             }
             "spark" -> drawPath(Path().apply {
                 // four-pointed star: recommendations

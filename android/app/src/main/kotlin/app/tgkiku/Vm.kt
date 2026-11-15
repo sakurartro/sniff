@@ -248,9 +248,22 @@ class Vm(a: Application) : AndroidViewModel(a) {
     }
 
     /** ❤: liked tracks are the library (Медиатека) and seed recommendations. Telegram is never touched. */
-    fun toggleLike() {
+    fun toggleLike() { current?.let { setLiked(it, !it.liked) } }
+
+    /** Track just taken out of the library by ✕, offered back for a few seconds. */
+    var undo by mutableStateOf<TrackInfo?>(null)
+    /** ✕: a liked track leaves the library, then (liked or not) it is skipped like `next`. */
+    fun dismiss() {
         val t = current ?: return
-        val liked = !t.liked
+        if (t.liked) {
+            setLiked(t, false); undo = t
+            viewModelScope.launch { delay(4000); if (undo == t) undo = null }
+        }
+        next()
+    }
+    fun restore() { undo?.let { setLiked(it, true) }; undo = null }
+
+    private fun setLiked(t: TrackInfo, liked: Boolean) {
         run {
             core!!.setLiked(t.documentId, liked)
             val upd = { l: List<TrackInfo> -> l.map { if (it.documentId == t.documentId) it.copy(liked = liked) else it } }
