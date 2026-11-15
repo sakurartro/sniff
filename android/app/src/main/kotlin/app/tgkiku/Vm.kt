@@ -202,6 +202,13 @@ class Vm(a: Application) : AndroidViewModel(a) {
 
     fun next() { if (index + 1 < queue.size) { index++; load() } else if (repeat == 1 && queue.isNotEmpty()) { index = 0; load() } }
     fun prev() { if (player.currentPosition > 3000 || index <= 0) { player.seekTo(0); pos = 0 } else { index--; load() } }
+    // --- queue editing (only upcoming tracks, i > index, so the current track stays valid) ---
+    fun jumpTo(i: Int) { if (i in queue.indices) { index = i; load() } }
+    fun removeAt(i: Int) { if (i > index && i in queue.indices) queue = queue.toMutableList().also { it.removeAt(i) } }
+    fun moveTrack(from: Int, to: Int) {
+        if (from <= index || to <= index || from !in queue.indices || to !in queue.indices) return
+        queue = queue.toMutableList().also { it.add(to, it.removeAt(from)) }
+    }
     fun toggle() { if (player.isPlaying) player.pause() else player.play() }
     fun seek(ms: Long) { player.seekTo(ms); pos = ms }
 

@@ -29,6 +29,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.zIndex
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
@@ -305,6 +307,60 @@ fun NowPlaying(vm: Vm, close: () -> Unit) {
             Ico("next", 44.dp, MaterialTheme.colorScheme.onBackground, Modifier.clickable { vm.next() })
             Ico(if (vm.repeat == 2) "repeat1" else "repeat", 28.dp, if (vm.repeat > 0) on else off, Modifier.clickable { vm.cycleRepeat() })
         }
+        var showQueue by remember { mutableStateOf(false) }
+        Spacer(Modifier.weight(1f))
+        Ico("queue", 28.dp, MaterialTheme.colorScheme.onBackground, Modifier.align(Alignment.End).clickable { showQueue = true })
+        if (showQueue) QueueSheet(vm) { showQueue = false }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun QueueSheet(vm: Vm, dismiss: () -> Unit) {
+    ModalBottomSheet(dismiss) {
+        val cur = vm.current
+        val rowH = 56.dp
+        val rowHPx = with(androidx.compose.ui.platform.LocalDensity.current) { rowH.toPx() }
+        // unique keys even when the same track is queued twice
+        val keys = remember(vm.queue) { val seen = HashMap<Long, Int>(); vm.queue.map { t -> "${t.documentId}#${seen.merge(t.documentId, 1, Int::plus)}" } }
+        LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+            if (cur != null) {
+                item { Text("Сейчас играет", fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp)) }
+                item { QueueRow(cur, Modifier.height(rowH)) }
+            }
+            item { Text("Далее", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)) }
+            itemsIndexed(vm.queue, key = { i, _ -> keys[i] }) { i, t ->
+                if (i <= vm.index) return@itemsIndexed
+                val idx by rememberUpdatedState(i)
+                var dy by remember { mutableFloatStateOf(0f) }
+                val box = rememberSwipeToDismissBoxState(confirmValueChange = { if (it != SwipeToDismissBoxValue.Settled) vm.removeAt(idx); true })
+                SwipeToDismissBox(box, modifier = Modifier.height(rowH).offset { androidx.compose.ui.unit.IntOffset(0, dy.toInt()) }.zIndex(if (dy != 0f) 1f else 0f),
+                    backgroundContent = { Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer)) }) {
+                    QueueRow(t, Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow).clickable { vm.jumpTo(idx) }) {
+                        Text("≡", fontSize = 24.sp, modifier = Modifier.padding(horizontal = 12.dp).pointerInput(Unit) {
+                            detectDragGesturesAfterLongPress({}, { dy = 0f }, { dy = 0f }) { ch, d ->
+                                ch.consume(); dy += d.y
+                                // swap with the neighbour once dragged past half a row
+                                val to = if (dy > rowHPx / 2) idx + 1 else if (dy < -rowHPx / 2) idx - 1 else idx
+                                if (to != idx && to > vm.index && to < vm.queue.size) { vm.moveTrack(idx, to); dy -= (to - idx) * rowHPx }
+                            }
+                        })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QueueRow(t: TrackInfo, modifier: Modifier, trailing: @Composable () -> Unit = {}) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Art(t, Modifier.size(44.dp), 6.dp)
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(t.performer.ifBlank { "Неизвестный исполнитель" }, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        trailing()
     }
 }
 
@@ -346,6 +402,11 @@ fun Ico(kind: String, size: Dp, color: Color, modifier: Modifier = Modifier) {
                 drawPath(Path().apply { moveTo(0.66f * w, 0.14f * w); lineTo(0.82f * w, 0.28f * w); lineTo(0.66f * w, 0.42f * w); close() }, color)
                 drawPath(Path().apply { moveTo(0.34f * w, 0.58f * w); lineTo(0.18f * w, 0.72f * w); lineTo(0.34f * w, 0.86f * w); close() }, color)
                 if (kind == "repeat1") drawPath(Path().apply { moveTo(0.42f * w, 0.44f * w); lineTo(0.5f * w, 0.38f * w); lineTo(0.5f * w, 0.62f * w) }, color, style = Stroke(0.06f * w, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            }
+            "queue" -> for (k in 0..2) {
+                val y = (0.25f + 0.25f * k) * w
+                drawRect(color, Offset(0.1f * w, y - 0.04f * w), Size(0.12f * w, 0.08f * w))
+                drawRect(color, Offset(0.3f * w, y - 0.04f * w), Size(0.6f * w, 0.08f * w))
             }
             else -> scale(if (kind == "prev") -1f else 1f, 1f, Offset(w / 2, w / 2)) {
                 drawPath(tri(0.1f, 0.72f), color)
