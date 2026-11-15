@@ -10,7 +10,7 @@ fn prompt(msg: &str) -> Result<String> {
     Ok(s.trim().to_string())
 }
 
-const HELP: &str = "usage: tgkiku <login | chats | select <chat_id> | unselect <chat_id> | sync [pages] | songs [query] | get <document_id> | cover [document_id]>\nenv: TGKIKU_DIR (data dir), TG_API_ID + TG_API_HASH (optional own keys)";
+const HELP: &str = "usage: tgkiku <login | chats | select <chat_id> | unselect <chat_id> | sync [pages] | songs [query] | get <document_id> | cover [document_id] | recs <seed document_id...>>\nenv: TGKIKU_DIR (data dir), TG_API_ID + TG_API_HASH (optional own keys), LASTFM_API_KEY";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -119,6 +119,17 @@ async fn main() -> Result<()> {
                 println!("{id}: {}", c.map_or("no thumb".into(), |p| p.display().to_string()));
             }
             println!("{have}/{} tracks have a thumb", ids.len());
+        }
+        "recs" => {
+            // `recs <document_id...>`: seeds, most recent last; needs a selected source bot chat
+            let mut seeds = vec![];
+            for id in &args[1..] {
+                seeds.push(store.track(id.parse()?).await?.ok_or_else(|| anyhow::anyhow!("unknown track {id}"))?);
+            }
+            match tgkiku_core::recs::Recs::default().next(&tg, &store, &seeds).await? {
+                Some(t) => println!("{:>20}  {} — {}  [{}:{}]", t.document_id, t.performer, t.title, fmt_dur(t.duration), t.chat_id),
+                None => println!("nothing found"),
+            }
         }
         _ => println!("{HELP}"),
     }

@@ -1,7 +1,8 @@
 use crate::keys::ApiKeys;
+use crate::recs::{self, Cand};
 use crate::store::{Store, Track};
 use anyhow::{anyhow, Result};
-use grammers_client::{media::{Media, PhotoSize}, Client, SignInError};
+use grammers_client::{media::{Media, PhotoSize}, message::Message, peer::Peer, tl, Client, SignInError};
 use grammers_mtsender::{ConnectionParams, SenderPool};
 use grammers_session::{storages::SqliteSession, types::PeerId, Session};
 use grammers_mtsender::SenderPoolFatHandle;
@@ -152,25 +153,139 @@ impl Tg {
             seen += 1;
             // cursor moves per message so an interrupted run resumes without rescanning
             store.set_cursor(chat_id, m.id()).await?;
-            if let Some(Media::Document(d)) = m.media() {
-                if !d.mime_type().is_some_and(|t| t.starts_with("audio/")) {
-                    continue;
-                }
-                let t = Track {
-                    document_id: d.id(),
-                    title: d.audio_title().or(d.name()).unwrap_or("Unknown").to_string(),
-                    performer: d.performer().unwrap_or("").to_string(),
-                    duration: d.duration().unwrap_or(0.0) as u32,
-                    size: d.size().unwrap_or(0) as u64,
-                    chat_id,
-                    message_id: m.id(),
-                };
+            if let Some(t) = track_of(&m, chat_id) {
                 new += store.add_track(&t).await? as usize;
             }
             // shortcut: fixed 300ms spacing, replace with real FloodWait handling when syncing many chats
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
         Ok((new, false))
+    }
+
+    /// Source bot kind of a chat: "inline" (results carry audio), "deeplink" (result cards link to `/start <payload>`),
+    /// "text" (send a query, get audio or song buttons back), "" (not a bot).
+    pub async fn detect_bot(&self, chat_id: i64) -> Result<String> {
+        let id = PeerId::from_bot_api_dialog_id(chat_id).ok_or_else(|| anyhow!("bad chat id"))?;
+        let mut dialogs = self.client.iter_dialogs();
+        while let Some(d) = dialogs.next().await? {
+            if d.peer().id() != id {
+                continue;
+            }
+            let Peer::User(u) = d.peer() else { return Ok(String::new()) };
+            let tl::enums::User::User(raw) = &u.raw else { return Ok(String::new()) };
+            if !raw.bot {
+                return Ok(String::new());
+            }
+            if raw.bot_inline_placeholder.is_none() {
+                return Ok("text".into());
+            }
+            let mut it = self.client.inline_query(d.peer_ref(), "Imagine Dragons Believer");
+            let mut kind = "text";
+            for _ in 0..5 {
+                let Some(r) = it.next().await? else { break };
+                let card = Card::of(&r.raw);
+                if card.audio.is_some() {
+                    return Ok("inline".into());
+                }
+                if card.payload.is_some() {
+                    kind = "deeplink";
+                }
+            }
+            return Ok(kind.into());
+        }
+        Err(anyhow!("chat {chat_id} not found in dialogs"))
+    }
+
+    /// Get the song from a source bot; the audio lands in the bot chat and is added to the library.
+    /// None if the bot has no matching song.
+    pub async fn fetch(&self, store: &Store, chat_id: i64, kind: &str, c: &Cand) -> Result<Option<Track>> {
+        let peer = self.peer_ref(chat_id).await?;
+        let last = self.client.iter_messages(peer.clone()).limit(1).next().await?.map_or(0, |m| m.id());
+        let query = format!("{} {}", c.artist, c.title);
+        let t = match kind {
+            "inline" | "deeplink" => {
+                let mut it = self.client.inline_query(peer.clone(), &query);
+                let mut hit = None;
+                for _ in 0..10 {
+                    let Some(r) = it.next().await? else { break };
+                    let card = Card::of(&r.raw);
+                    let ok = match &card.audio {
+                        Some((p, t, d)) => recs::matches(c, p, t, Some(*d)),
+                        None => recs::matches(c, &card.artist, &card.title, None),
+                    };
+                    if ok && (card.audio.is_some() || card.payload.is_some()) {
+                        hit = Some((r, card));
+                        break;
+                    }
+                }
+                let Some((r, card)) = hit else { return Ok(None) };
+                match card.payload {
+                    Some(p) if card.audio.is_none() => self.client.send_message(peer.clone(), format!("/start {p}")).await.map(drop)?,
+                    _ => r.send(peer.clone()).await?,
+                }
+                // downloader bots fetch the file first; 45s covers a slow Deezer rip
+                self.wait_audio(&peer, chat_id, last, 45, |_| true).await?
+            }
+            "text" => {
+                self.client.send_message(peer.clone(), query.as_str()).await?;
+                let mut button = None;
+                let got = self
+                    .wait_audio(&peer, chat_id, last, 15, |m| {
+                        if button.is_none() {
+                            button = m.reply_markup().and_then(|k| song_button(&k, c)).map(|d| (m.id(), d));
+                        }
+                        button.is_none()
+                    })
+                    .await?;
+                match (got, button) {
+                    (Some(t), _) => Some(t),
+                    (None, Some((msg_id, data))) => {
+                        let last = self.client.iter_messages(peer.clone()).limit(1).next().await?.map_or(0, |m| m.id());
+                        self.client
+                            .invoke(&tl::functions::messages::GetBotCallbackAnswer { game: false, peer: (&peer).into(), msg_id, data: Some(data), password: None })
+                            .await?;
+                        self.wait_audio(&peer, chat_id, last, 30, |_| true).await?
+                    }
+                    _ => None,
+                }
+            }
+            _ => return Ok(None),
+        };
+        // text bots answer with whatever they found, so check the tags too
+        let Some(t) = t.filter(|t| kind != "text" || recs::matches(c, &t.performer, &t.title, Some(t.duration))) else { return Ok(None) };
+        store.add_track(&t).await?;
+        Ok(Some(t))
+    }
+
+    /// Polls the chat for an incoming audio newer than `after`, up to `secs`. `keep_waiting` sees every new
+    /// incoming message and can stop the wait early by returning false.
+    async fn wait_audio(&self, peer: &grammers_session::types::PeerRef, chat_id: i64, after: i32, secs: u64, mut keep_waiting: impl FnMut(&Message) -> bool) -> Result<Option<Track>> {
+        let mut seen = after;
+        for _ in 0..secs / 3 {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let mut it = self.client.iter_messages(peer.clone()).limit(10);
+            let mut fresh = vec![];
+            while let Some(m) = it.next().await? {
+                if m.id() <= seen {
+                    break;
+                }
+                fresh.push(m);
+            }
+            // oldest first, so the first audio after our request wins
+            for m in fresh.into_iter().rev() {
+                seen = m.id();
+                if m.outgoing() {
+                    continue;
+                }
+                if let Some(t) = track_of(&m, chat_id) {
+                    return Ok(Some(t));
+                }
+                if !keep_waiting(&m) {
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub async fn media_of(&self, store: &Store, document_id: i64) -> Result<Media> {
@@ -245,4 +360,75 @@ impl Tg {
         }
         Err(anyhow!("chat {chat_id} not found in dialogs"))
     }
+}
+
+fn track_of(m: &Message, chat_id: i64) -> Option<Track> {
+    let Some(Media::Document(d)) = m.media() else { return None };
+    if !d.mime_type().is_some_and(|t| t.starts_with("audio/")) {
+        return None;
+    }
+    Some(Track {
+        document_id: d.id(),
+        title: d.audio_title().or(d.name()).unwrap_or("Unknown").to_string(),
+        performer: d.performer().unwrap_or("").to_string(),
+        duration: d.duration().unwrap_or(0.0) as u32,
+        size: d.size().unwrap_or(0) as u64,
+        chat_id,
+        message_id: m.id(),
+    })
+}
+
+/// What an inline result offers: its card text, real audio tags if it carries a file, a `/start` payload if it links to one.
+struct Card {
+    artist: String,
+    title: String,
+    audio: Option<(String, String, u32)>,
+    payload: Option<String>,
+}
+
+impl Card {
+    fn of(r: &tl::enums::BotInlineResult) -> Self {
+        use tl::enums::{BotInlineMessage, BotInlineResult, Document, DocumentAttribute};
+        let (title, desc, doc, msg) = match r {
+            BotInlineResult::Result(x) => (&x.title, &x.description, None, &x.send_message),
+            BotInlineResult::BotInlineMediaResult(x) => (&x.title, &x.description, x.document.as_ref(), &x.send_message),
+        };
+        let audio = match doc {
+            Some(Document::Document(d)) => d.attributes.iter().find_map(|a| match a {
+                DocumentAttribute::Audio(a) if !a.voice => Some((a.performer.clone().unwrap_or_default(), a.title.clone().unwrap_or_default(), a.duration.max(0) as u32)),
+                _ => None,
+            }),
+            _ => None,
+        };
+        let markup = match msg {
+            BotInlineMessage::Text(m) => m.reply_markup.as_ref(),
+            BotInlineMessage::MediaAuto(m) => m.reply_markup.as_ref(),
+            _ => None,
+        };
+        let payload = markup.and_then(|k| {
+            buttons(k).into_iter().find_map(|(_, t)| match t {
+                tl::enums::InlineButtonType::Url(u) => recs::start_payload(&u.url),
+                _ => None,
+            })
+        });
+        let (artist, title) = recs::card_meta(title.as_deref().unwrap_or(""), desc.as_deref().unwrap_or(""));
+        Self { artist, title, audio, payload }
+    }
+}
+
+fn buttons(k: &tl::enums::ReplyMarkup) -> Vec<(String, tl::enums::InlineButtonType)> {
+    let tl::enums::ReplyMarkup::ReplyInlineMarkup(m) = k else { return vec![] };
+    m.rows
+        .iter()
+        .flat_map(|tl::enums::KeyboardInlineButtonRow::Row(r)| &r.buttons)
+        .map(|tl::enums::KeyboardInlineButton::Button(b)| (b.text.clone(), b.r#type.clone()))
+        .collect()
+}
+
+/// Callback data of the button whose caption names the song.
+fn song_button(k: &tl::enums::ReplyMarkup, c: &Cand) -> Option<Vec<u8>> {
+    buttons(k).into_iter().find_map(|(text, t)| match t {
+        tl::enums::InlineButtonType::Callback(cb) if !cb.requires_password && recs::button_matches(c, &text) => Some(cb.data),
+        _ => None,
+    })
 }

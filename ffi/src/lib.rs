@@ -1,6 +1,6 @@
 //! Kotlin-facing API (UniFFI). Thin wrapper over tgkiku-core; one `App` per process.
 use std::{collections::HashMap, path::PathBuf, sync::{Arc, Mutex}};
-use tgkiku_core::{artists, keys::ApiKeys, store::{Store, Track}, stream::{Mode, Streams}, tg::{LoginToken, PasswordToken, SignIn, Tg}};
+use tgkiku_core::{artists, keys::ApiKeys, recs::Recs, store::{Store, Track}, stream::{Mode, Streams}, tg::{LoginToken, PasswordToken, SignIn, Tg}};
 use tokio::sync::Mutex as AsyncMutex;
 
 uniffi::setup_scaffolding!();
@@ -70,6 +70,7 @@ pub struct App {
     pw_token: Arc<AsyncMutex<Option<PasswordToken>>>,
     qr: Arc<Mutex<Login>>,
     qr_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    recs: AsyncMutex<Recs>,
 }
 
 /// `data_dir` holds session + library db, `cache_dir` holds downloaded audio.
@@ -91,6 +92,7 @@ pub async fn open_app(data_dir: String, cache_dir: String) -> R<Arc<App>> {
         pw_token: Arc::new(AsyncMutex::new(None)),
         qr: Arc::new(Mutex::new(Login::Idle)),
         qr_task: Mutex::new(None),
+        recs: AsyncMutex::new(Recs::default()),
     }))
 }
 
@@ -170,6 +172,18 @@ impl App {
     pub async fn tracks(&self, query: String) -> R<Vec<TrackInfo>> {
         let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
         Ok(self.store.tracks(&query).await.map_err(e)?.into_iter().map(|t| info(t, &names)).collect())
+    }
+
+    /// One new song similar to `seeds` (document ids, most recent last), fetched from a selected source bot
+    /// into the library; None if nothing matched. Slow (a bot download), call ahead of time.
+    pub async fn recommend(&self, seeds: Vec<i64>) -> R<Option<TrackInfo>> {
+        let mut tracks = vec![];
+        for id in seeds {
+            tracks.extend(self.store.track(id).await.map_err(e)?);
+        }
+        let Some(t) = self.recs.lock().await.next(&self.tg, &self.store, &tracks).await.map_err(e)? else { return Ok(None) };
+        let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
+        Ok(Some(info(t, &names)))
     }
 
     /// Starts downloading the track (`foreground` = it is the one playing, else it is a prefetch) and returns its size in bytes.

@@ -30,6 +30,8 @@ impl Store {
         .await?;
         // migration for DBs created before LRU eviction; fails harmlessly when the column already exists
         let _ = c.execute("ALTER TABLE tracks ADD COLUMN last_played INTEGER NOT NULL DEFAULT 0", ()).await;
+        // source bot kind: NULL = not checked yet, '' = not a usable bot, else inline/deeplink/text
+        let _ = c.execute("ALTER TABLE chats ADD COLUMN bot TEXT", ()).await;
         Ok(Self(c))
     }
 
@@ -60,6 +62,21 @@ impl Store {
             out.push(r.get(0)?);
         }
         Ok(out)
+    }
+
+    /// Selected chats with their bot kind (None = not checked yet).
+    pub async fn selected_bots(&self) -> Result<Vec<(i64, Option<String>)>> {
+        let mut rows = self.0.query("SELECT id,bot FROM chats WHERE selected=1", ()).await?;
+        let mut out = vec![];
+        while let Some(r) = rows.next().await? {
+            out.push((r.get(0)?, r.get(1)?));
+        }
+        Ok(out)
+    }
+
+    pub async fn set_bot(&self, chat: i64, kind: &str) -> Result<()> {
+        self.0.execute("UPDATE chats SET bot=?2 WHERE id=?1", params![chat, kind]).await?;
+        Ok(())
     }
 
     /// Lowest message id already scanned (0 = nothing yet); backfill continues below it.
@@ -168,6 +185,9 @@ mod tests {
         assert!(s.set_selected(1, true).await.unwrap());
         assert!(!s.set_selected(99, true).await.unwrap());
         assert_eq!(s.selected_chats().await.unwrap(), vec![1]);
+        assert_eq!(s.selected_bots().await.unwrap(), vec![(1, None)]);
+        s.set_bot(1, "inline").await.unwrap();
+        assert_eq!(s.selected_bots().await.unwrap(), vec![(1, Some("inline".into()))]);
         assert_eq!(s.last_played().await.unwrap()[&10], 0);
         s.touch(10).await.unwrap();
         assert!(s.last_played().await.unwrap()[&10] > 0);
