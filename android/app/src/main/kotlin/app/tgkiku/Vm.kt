@@ -37,6 +37,10 @@ class Vm(a: Application) : AndroidViewModel(a) {
         private set
     fun setAppTheme(t: AppTheme) { theme = t; prefs.edit().putString("theme", t.name).apply() }
 
+    var query by mutableStateOf("")
+    var recent by mutableStateOf(prefs.getString("recent", "")!!.split(',').mapNotNull { it.toLongOrNull() })
+        private set
+
     private val player = Shared.player(a)
     var queue by mutableStateOf<List<TrackInfo>>(emptyList())
     var index by mutableIntStateOf(-1)
@@ -158,6 +162,8 @@ class Vm(a: Application) : AndroidViewModel(a) {
 
     private fun load() {
         val t = current ?: return
+        recent = (listOf(t.documentId) + recent.filter { it != t.documentId }).take(20)
+        prefs.edit().putString("recent", recent.joinToString(",")).apply()
         playJob?.cancel()
         playJob = viewModelScope.launch {
             loadingTrack = true; pos = 0

@@ -25,7 +25,7 @@ private val accents = mapOf(
 fun colorSchemeFor(theme: String, dark: Boolean): ColorScheme {
     val a = accents[theme] // null = Default (original Apple-Music-like look, unchanged)
     if (a == null) return if (dark)
-        darkColorScheme(primary = Accent, onPrimary = Color.White, background = Color.Black, surface = Color(0xFF1C1C1E), onBackground = Color.White, onSurface = Color.White, onSurfaceVariant = Color(0xFF8E8E93), outlineVariant = Color(0x33FFFFFF))
+        darkColorScheme(primary = Accent, onPrimary = Color(0xFF0F0F12), background = Color(0xFF0F0F12), surface = Color(0xFF1D1D23), onBackground = Color(0xFFF2F2F5), onSurface = Color(0xFFF2F2F5), onSurfaceVariant = Color(0xFF9A9AA6), outlineVariant = Color(0xFF26262C))
     else
         lightColorScheme(primary = Accent, onPrimary = Color.White, background = Color.White, surface = Color(0xFFF2F2F7), onBackground = Color.Black, onSurface = Color.Black, onSurfaceVariant = Color(0xFF8E8E93), outlineVariant = Color(0x1F000000))
     // Neutral surfaces with a faint tint of the accent; accent itself only on primary.

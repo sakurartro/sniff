@@ -16,6 +16,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import kotlinx.coroutines.coroutineScope
@@ -35,6 +38,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -52,7 +56,7 @@ import com.google.zxing.qrcode.QRCodeWriter
 import uniffi.tgkiku_ffi.Chat
 import uniffi.tgkiku_ffi.TrackInfo
 
-val Accent = Color(0xFFFA2D48)
+val Accent = Color(0xFFFF5A7A)
 
 @Composable
 fun TgkikuTheme(theme: AppTheme, content: @Composable () -> Unit) {
@@ -149,40 +153,56 @@ fun qrBitmap(text: String): ImageBitmap {
 
 // ---------- main ----------
 
+private const val SEP = "\n"
+private const val UNKNOWN = "Неизвестно"
+private const val EMPTY = "Пусто. Выберите чаты в Настройки → Чаты и синхронизируйте."
+
 @Composable
 fun MainScreen(vm: Vm) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var full by rememberSaveable { mutableStateOf(false) }
-    var chats by rememberSaveable { mutableStateOf(false) }
+    var stack by rememberSaveable { mutableStateOf("") } // routes opened inside the current tab, SEP-joined
+    val route = stack.substringAfterLast(SEP)
+    val push = { r: String -> stack = if (stack.isEmpty()) r else stack + SEP + r }
+    val pop = { stack = if (SEP in stack) stack.substringBeforeLast(SEP) else "" }
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().systemBarsPadding()) {
             Box(Modifier.weight(1f)) {
-                when (tab) {
-                    0 -> TrackList(vm, "Медиатека", vm.tracks, "Пусто. Выберите чаты в Настройки → Чаты и синхронизируйте.")
-                    1 -> SearchTab(vm)
-                    else -> if (chats) Column {
-                        TextButton({ chats = false }) { Text("‹ Настройки", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
-                        ChatsTab(vm)
-                    } else SettingsScreen(vm.theme, { vm.setAppTheme(it) }) { chats = true }
+                when {
+                    tab == 3 -> if (route == "manage") Sub(pop) { ChatsTab(vm) } else SettingsScreen(vm.theme, { vm.setAppTheme(it) }) { push("manage") }
+                    route.isNotEmpty() -> Sub(pop) { Detail(vm, route, push) }
+                    tab == 0 -> HomeTab(vm, push)
+                    tab == 1 -> SearchTab(vm, push)
+                    else -> LibraryTab(vm, push)
                 }
             }
             if (vm.current != null) MiniPlayer(vm) { full = true }
-            TabBar(tab) { tab = it }
+            TabBar(tab) { tab = it; stack = "" }
         }
         AnimatedVisibility(full, enter = slideInVertically { it }, exit = slideOutVertically { it }) { NowPlaying(vm) { full = false } }
     }
     BackHandler(full) { full = false }
-    BackHandler(!full && tab == 2 && chats) { chats = false }
+    BackHandler(!full && stack.isNotEmpty()) { pop() }
+}
+
+@Composable
+fun Sub(back: () -> Unit, content: @Composable () -> Unit) {
+    Column {
+        TextButton(back) { Text("‹ Назад", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
+        Box(Modifier.weight(1f)) { content() }
+    }
 }
 
 @Composable
 fun TabBar(sel: Int, on: (Int) -> Unit) {
-    Column {
+    Column(Modifier.background(MaterialTheme.colorScheme.background)) {
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        Row(Modifier.fillMaxWidth().height(52.dp)) {
-            listOf("Медиатека", "Поиск", "Настройки").forEachIndexed { i, s ->
-                Box(Modifier.weight(1f).fillMaxHeight().clickable { on(i) }, Alignment.Center) {
-                    Text(s, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = if (i == sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.fillMaxWidth().height(56.dp)) {
+            listOf("home" to "Главная", "search" to "Поиск", "library" to "Библиотека", "settings" to "Настройки").forEachIndexed { i, (k, s) ->
+                val c = if (i == sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                Column(Modifier.weight(1f).fillMaxHeight().clickable { on(i) }, Arrangement.Center, Alignment.CenterHorizontally) {
+                    Ico(k, 24.dp, c)
+                    Text(s, fontSize = 11.sp, color = c)
                 }
             }
         }
@@ -190,7 +210,119 @@ fun TabBar(sel: Int, on: (Int) -> Unit) {
 }
 
 @Composable
-fun LargeTitle(s: String) = Text(s, fontSize = 34.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp))
+fun LargeTitle(s: String) = Text(s, fontSize = 30.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 8.dp))
+
+@Composable
+fun Section(s: String) = Text(s, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 20.dp, bottom = 8.dp))
+
+@Composable
+fun NavRow(text: String, detail: String? = null, accent: Boolean = false, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(text, Modifier.weight(1f), fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (accent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground)
+        detail?.let { Text(it, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 8.dp)) }
+        Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 18.sp)
+    }
+    HorizontalDivider(Modifier.padding(start = 18.dp), color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+@Composable
+fun ChatTile(title: String, count: Int?, modifier: Modifier, onClick: () -> Unit) {
+    Box(modifier.height(88.dp).clip(RoundedCornerShape(12.dp)).background(grad(title, dark = true)).clickable(onClick = onClick).padding(12.dp)) {
+        Column(Modifier.align(Alignment.BottomStart)) {
+            Text(title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (count != null) Text("$count треков", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
+        }
+    }
+}
+
+/** Two tiles per row. */
+fun LazyListScope.chatTiles(chats: List<Chat>, tracks: List<TrackInfo>, push: (String) -> Unit) {
+    items(chats.chunked(2), key = { it[0].id }) { row ->
+        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            row.forEach { c -> ChatTile(c.title, tracks.count { it.chatId == c.id }, Modifier.weight(1f)) { push("chat:${c.id}") } }
+            if (row.size == 1) Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+fun HomeTab(vm: Vm, push: (String) -> Unit) {
+    val byId = remember(vm.tracks) { vm.tracks.associateBy { it.documentId } }
+    val recent = vm.recent.mapNotNull { byId[it] }
+    val chats = vm.chats.filter { it.selected }
+    LazyColumn(Modifier.fillMaxSize()) {
+        item { LargeTitle("Главная") }
+        if (recent.isNotEmpty()) {
+            item { Section("Недавно играло") }
+            item {
+                LazyRow(contentPadding = PaddingValues(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    itemsIndexed(recent) { i, t ->
+                        Column(Modifier.width(150.dp).clickable { vm.play(recent, i) }) {
+                            Art(t, Modifier.size(150.dp), 12.dp)
+                            Text(t.title, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+                            Text(vm.chats.firstOrNull { it.id == t.chatId }?.title ?: "", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        }
+        item { Section("Из чатов") }
+        if (chats.isEmpty()) item { Text(EMPTY, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(18.dp)) }
+        chatTiles(chats, vm.tracks, push)
+    }
+}
+
+@Composable
+fun LibraryTab(vm: Vm, push: (String) -> Unit) {
+    val added = remember(vm.tracks) { vm.tracks.sortedByDescending { it.messageId }.take(6) } // shortcut: messageId order, TrackInfo has no post date
+    LazyColumn(Modifier.fillMaxSize()) {
+        item { LargeTitle("Библиотека") }
+        items(listOf("playlists" to "Плейлисты", "artists" to "Исполнители", "albums" to "Альбомы", "songs" to "Песни", "chats" to "Чаты")) { (r, n) ->
+            NavRow(n, accent = true) { push(r) }
+        }
+        if (added.isNotEmpty()) {
+            item { Section("Недавно добавлено") }
+            items(added.chunked(2)) { row ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    row.forEach { t ->
+                        Column(Modifier.weight(1f).clickable { vm.play(added, added.indexOf(t)) }) {
+                            Art(t, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
+                            Text(t.title, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+                            Text(t.performer.ifBlank { UNKNOWN }, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun Detail(vm: Vm, route: String, push: (String) -> Unit) {
+    val arg = route.substringAfter(':', "")
+    when (route.substringBefore(':')) {
+        "songs" -> TrackList(vm, "Песни", vm.tracks, EMPTY)
+        "playlists" -> TrackList(vm, "Плейлисты", emptyList(), "Плейлисты появятся позже.")
+        // shortcut: no album tag in TrackInfo, so everything is one "Неизвестно" group; upgrade when the core exposes tags
+        "albums" -> GroupList("Альбомы", listOf(UNKNOWN to vm.tracks.size)) { push("songs") }
+        "artists" -> GroupList("Исполнители", vm.tracks.groupingBy { it.performer.ifBlank { UNKNOWN } }.eachCount().toList().sortedBy { it.first.lowercase() }) { push("artist:$it") }
+        "artist" -> TrackList(vm, arg, vm.tracks.filter { it.performer.ifBlank { UNKNOWN } == arg }, "")
+        "chats" -> LazyColumn(Modifier.fillMaxSize()) { item { LargeTitle("Чаты") }; chatTiles(vm.chats.filter { it.selected }, vm.tracks, push) }
+        "chat" -> {
+            val id = arg.toLongOrNull()
+            TrackList(vm, vm.chats.firstOrNull { it.id == id }?.title ?: "Чат", vm.tracks.filter { it.chatId == id }, EMPTY)
+        }
+    }
+}
+
+@Composable
+fun GroupList(title: String, groups: List<Pair<String, Int>>, open: (String) -> Unit) {
+    LazyColumn(Modifier.fillMaxSize()) {
+        item { LargeTitle(title) }
+        items(groups) { (n, c) -> NavRow(n, "$c") { open(n) } }
+    }
+}
 
 @Composable
 fun TrackList(vm: Vm, title: String, list: List<TrackInfo>, empty: String, header: @Composable () -> Unit = {}) {
@@ -204,17 +336,17 @@ fun TrackList(vm: Vm, title: String, list: List<TrackInfo>, empty: String, heade
     LazyColumn(Modifier.fillMaxSize(), state) {
         item { LargeTitle(title) }
         item { header() }
-        if (list.isEmpty()) item { Text(empty, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(20.dp)) }
+        if (list.isEmpty()) item { Text(empty, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(18.dp)) }
         itemsIndexed(list, key = { _, t -> t.documentId }) { i, t -> TrackRow(t, vm.current?.documentId == t.documentId) { vm.play(list, i) } }
     }
 }
 
 @Composable
 fun TrackRow(t: TrackInfo, active: Boolean, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Art(t, Modifier.size(48.dp), 6.dp)
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Art(t, Modifier.size(48.dp), 12.dp)
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-            Text(t.title, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground)
+            Text(t.title, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground)
             Text(t.performer.ifBlank { "Неизвестный исполнитель" }, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Text(fmt(t.duration.toLong() * 1000), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -222,17 +354,39 @@ fun TrackRow(t: TrackInfo, active: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-fun SearchTab(vm: Vm) {
-    var q by rememberSaveable { mutableStateOf("") }
-    TrackList(vm, "Поиск", vm.results, if (q.isBlank()) "Ищите по названию или исполнителю." else "Ничего не найдено.") {
-        TextField(
-            q, { q = it; vm.search(it) }, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), singleLine = true,
-            placeholder = { Text("Ваша медиатека") }, shape = RoundedCornerShape(12.dp),
-            colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface, cursorColor = MaterialTheme.colorScheme.primary),
-        )
+fun SearchTab(vm: Vm, push: (String) -> Unit) {
+    val q = vm.query
+    val chats = vm.chats.filter { it.selected }
+    val found = chats.filter { it.title.contains(q, true) }
+    val artists = vm.results.map { it.performer }.filter { it.isNotBlank() }.distinct().take(10)
+    val tracks = vm.results.take(30)
+    LazyColumn(Modifier.fillMaxSize()) {
+        item { LargeTitle("Поиск") }
+        item {
+            TextField(
+                q, { vm.query = it; vm.search(it) }, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), singleLine = true,
+                placeholder = { Text("Треки, исполнители, чаты") }, shape = RoundedCornerShape(12.dp),
+                colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface, cursorColor = MaterialTheme.colorScheme.primary),
+            )
+        }
+        if (q.isBlank()) chatTiles(chats, vm.tracks, push)
+        else {
+            if (tracks.isNotEmpty()) {
+                item { Section("Треки") }
+                itemsIndexed(tracks) { i, t -> TrackRow(t, vm.current?.documentId == t.documentId) { vm.play(tracks, i) } }
+            }
+            if (artists.isNotEmpty()) {
+                item { Section("Исполнители") }
+                items(artists) { a -> NavRow(a) { push("artist:$a") } }
+            }
+            if (found.isNotEmpty()) {
+                item { Section("Чаты") }
+                items(found) { c -> NavRow(c.title) { push("chat:${c.id}") } }
+            }
+            if (tracks.isEmpty() && found.isEmpty()) item { Text("Ничего не найдено.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(18.dp)) }
+        }
     }
 }
-
 @Composable
 fun ChatsTab(vm: Vm) {
     LazyColumn(Modifier.fillMaxSize()) {
@@ -367,13 +521,18 @@ private fun QueueRow(t: TrackInfo, modifier: Modifier, trailing: @Composable () 
 
 // ---------- bits ----------
 
+/** Gradient from a pair of hues that depends on the name; dark = readable under white text. */
+fun grad(name: String, dark: Boolean = false): Brush {
+    val h = (name.hashCode().toUInt() % 360u).toFloat()
+    return Brush.linearGradient(if (dark) listOf(Color.hsv(h, 0.6f, 0.7f), Color.hsv((h + 50) % 360, 0.75f, 0.45f)) else listOf(Color.hsv(h, 0.55f, 0.95f), Color.hsv((h + 50) % 360, 0.75f, 0.65f)))
+}
+
 /** Cover when one is found, else a gradient derived from the title. */
 @Composable
 fun Art(t: TrackInfo, modifier: Modifier, radius: Dp) {
     val cover by produceState<Bitmap?>(null, t.documentId) { value = Covers.bitmap(t) }
-    val h = ((t.title + t.performer).hashCode().toUInt() % 360u).toFloat()
     cover?.let { Image(it.asImageBitmap(), null, modifier.clip(RoundedCornerShape(radius)), contentScale = ContentScale.Crop); return }
-    Box(modifier.clip(RoundedCornerShape(radius)).background(Brush.linearGradient(listOf(Color.hsv(h, 0.55f, 0.95f), Color.hsv((h + 50) % 360, 0.75f, 0.65f)))), Alignment.Center) {
+    Box(modifier.clip(RoundedCornerShape(radius)).background(grad(t.title + t.performer)), Alignment.Center) {
         Text("♪", color = Color.White.copy(alpha = 0.85f), fontSize = 22.sp)
     }
 }
@@ -408,6 +567,20 @@ fun Ico(kind: String, size: Dp, color: Color, modifier: Modifier = Modifier) {
                 val y = (0.25f + 0.25f * k) * w
                 drawRect(color, Offset(0.1f * w, y - 0.04f * w), Size(0.12f * w, 0.08f * w))
                 drawRect(color, Offset(0.3f * w, y - 0.04f * w), Size(0.6f * w, 0.08f * w))
+            }
+            "home" -> {
+                val st = Stroke(0.08f * w, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                drawPath(Path().apply { moveTo(0.12f * w, 0.48f * w); lineTo(0.5f * w, 0.16f * w); lineTo(0.88f * w, 0.48f * w) }, color, style = st)
+                drawPath(Path().apply { moveTo(0.22f * w, 0.42f * w); lineTo(0.22f * w, 0.84f * w); lineTo(0.78f * w, 0.84f * w); lineTo(0.78f * w, 0.42f * w) }, color, style = st)
+            }
+            "search" -> {
+                drawCircle(color, 0.26f * w, Offset(0.43f * w, 0.43f * w), style = Stroke(0.08f * w))
+                drawLine(color, Offset(0.63f * w, 0.63f * w), Offset(0.88f * w, 0.88f * w), 0.08f * w, StrokeCap.Round)
+            }
+            "library" -> for (k in 0..2) drawRect(color, Offset((0.14f + 0.26f * k) * w, 0.16f * w), Size(0.16f * w, 0.68f * w))
+            "settings" -> {
+                drawCircle(color, 0.2f * w, style = Stroke(0.08f * w))
+                for (k in 0 until 8) rotate(k * 45f) { drawLine(color, Offset(0.5f * w, 0.12f * w), Offset(0.5f * w, 0.26f * w), 0.08f * w) }
             }
             else -> scale(if (kind == "prev") -1f else 1f, 1f, Offset(w / 2, w / 2)) {
                 drawPath(tri(0.1f, 0.72f), color)
