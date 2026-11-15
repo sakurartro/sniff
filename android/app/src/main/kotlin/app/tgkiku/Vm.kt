@@ -65,7 +65,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
         Shared.onPrev = ::prev
         player.addListener(listener)
         playing = player.isPlaying
-        viewModelScope.launch { while (true) { if (playing) pos = player.currentPosition; delay(500) } }
+        viewModelScope.launch { while (true) { if (playing && !loadingTrack) pos = player.currentPosition; delay(500) } }
         run {
             val c = openApp(a.filesDir.resolve("tg").path, a.cacheDir.resolve("tracks").path)
             core = c; Shared.core = c
