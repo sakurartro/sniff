@@ -59,8 +59,11 @@ import uniffi.tgkiku_ffi.TrackInfo
 val Accent = Color(0xFFFF5A7A)
 
 @Composable
-fun TgkikuTheme(theme: AppTheme, content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = colorSchemeFor(theme.name, isSystemInDarkTheme()), content = content)
+fun isDark(mode: Int) = if (mode == 0) isSystemInDarkTheme() else mode == 2
+
+@Composable
+fun TgkikuTheme(theme: AppTheme, mode: Int, content: @Composable () -> Unit) {
+    MaterialTheme(colorScheme = colorSchemeFor(theme.name, isDark(mode)), content = content)
 }
 
 @Composable
@@ -169,7 +172,7 @@ fun MainScreen(vm: Vm) {
         Column(Modifier.fillMaxSize().systemBarsPadding()) {
             Box(Modifier.weight(1f)) {
                 when {
-                    tab == 3 -> if (route == "manage") Sub(pop) { ChatsTab(vm) } else SettingsScreen(vm.theme, { vm.setAppTheme(it) }) { push("manage") }
+                    tab == 3 -> if (route == "manage") Sub(pop) { ChatsTab(vm) } else SettingsScreen(vm.theme, { vm.setAppTheme(it) }, vm.mode, { vm.setThemeMode(it) }) { push("manage") }
                     route.isNotEmpty() -> Sub(pop) { Detail(vm, route, push) }
                     tab == 0 -> HomeTab(vm, push)
                     tab == 1 -> SearchTab(vm, push)

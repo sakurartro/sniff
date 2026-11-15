@@ -36,6 +36,9 @@ class Vm(a: Application) : AndroidViewModel(a) {
     var theme by mutableStateOf(AppTheme.entries.firstOrNull { it.name == prefs.getString("theme", null) } ?: AppTheme.Default)
         private set
     fun setAppTheme(t: AppTheme) { theme = t; prefs.edit().putString("theme", t.name).apply() }
+    var mode by mutableIntStateOf(prefs.getInt("mode", 0)) // 0 system, 1 light, 2 dark
+        private set
+    fun setThemeMode(m: Int) { mode = m; prefs.edit().putInt("mode", m).apply() }
 
     var query by mutableStateOf("")
     var recent by mutableStateOf(prefs.getString("recent", "")!!.split(',').mapNotNull { it.toLongOrNull() })

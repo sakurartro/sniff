@@ -17,11 +17,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun SettingsScreen(selected: AppTheme, onSelect: (AppTheme) -> Unit, openChats: () -> Unit) {
+fun SettingsScreen(selected: AppTheme, onSelect: (AppTheme) -> Unit, mode: Int, onMode: (Int) -> Unit, openChats: () -> Unit) {
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             LargeTitle("Настройки")
@@ -32,6 +33,17 @@ fun SettingsScreen(selected: AppTheme, onSelect: (AppTheme) -> Unit, openChats: 
                 }
             }
             SettingsSection("Оформление") {
+                Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("Системный", "Светлый", "Тёмный").forEachIndexed { i, s ->
+                        val on = i == mode
+                        Text(
+                            s, fontSize = 14.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center,
+                            color = if (on) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.background)
+                                .clickable { onMode(i) }.padding(vertical = 10.dp),
+                        )
+                    }
+                }
                 AppTheme.entries.forEachIndexed { i, t ->
                     if (i > 0) HorizontalDivider(Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
                     Row(Modifier.fillMaxWidth().clickable { onSelect(t) }.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {

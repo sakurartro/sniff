@@ -33,7 +33,7 @@ fun colorSchemeFor(theme: String, dark: Boolean): ColorScheme {
         val p = Color(a.dark)
         darkColorScheme(
             primary = p, onPrimary = Color(a.onDark),
-            background = lerp(Color(0xFF0F0F10), p, 0.14f), surface = lerp(Color(0xFF1C1C1E), p, 0.20f),
+            background = lerp(Color(0xFF0F0F10), p, 0.30f), surface = lerp(Color(0xFF1C1C1E), p, 0.38f),
             onBackground = Color(0xFFE6E6EA), onSurface = Color(0xFFE6E6EA), onSurfaceVariant = Color(0xFFA0A0A8),
             outlineVariant = Color(0x33FFFFFF),
         )
@@ -41,7 +41,7 @@ fun colorSchemeFor(theme: String, dark: Boolean): ColorScheme {
         val p = Color(a.light)
         lightColorScheme(
             primary = p, onPrimary = Color.White,
-            background = lerp(Color.White, p, 0.08f), surface = lerp(Color(0xFFF2F2F7), p, 0.16f),
+            background = lerp(Color.White, p, 0.16f), surface = lerp(Color(0xFFF2F2F7), p, 0.26f),
             onBackground = Color(0xFF1B1B1F), onSurface = Color(0xFF1B1B1F), onSurfaceVariant = Color(0xFF63636A),
             outlineVariant = Color(0x1F000000),
         )
