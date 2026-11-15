@@ -142,9 +142,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
         playJob = viewModelScope.launch {
             loadingTrack = true; pos = 0
             try {
-                val t0 = android.os.SystemClock.elapsedRealtime()
                 val path = core!!.download(t.documentId)
-                android.util.Log.d("tgkiku", "download ${t.documentId} size=${t.size} took ${android.os.SystemClock.elapsedRealtime() - t0} ms")
                 val cover = Covers.file(t) // after download, so the embedded tag is available
                 val meta = MediaMetadata.Builder().setTitle(t.title).setArtist(t.performer.ifBlank { null }).setArtworkUri(cover?.let { Uri.fromFile(it) }).build()
                 player.setMediaItem(MediaItem.Builder().setUri(Uri.fromFile(File(path))).setMediaMetadata(meta).build())
