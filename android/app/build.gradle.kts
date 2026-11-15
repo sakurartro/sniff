@@ -15,6 +15,13 @@ android {
         versionName = "0.1"
         ndk { abiFilters += "arm64-v8a" }
     }
+    signingConfigs {
+        // Fixed key committed to the repo so every CI build is signed the same and installs over the old one.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android"
+        }
+    }
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
