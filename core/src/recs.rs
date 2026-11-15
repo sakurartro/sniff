@@ -146,11 +146,10 @@ pub struct Recs {
 }
 
 impl Recs {
-    /// One new song similar to the last 3 of `seeds` (most recent last) that are not recommendations themselves,
-    /// fetched into the library and marked as a recommendation; None if nothing worked.
+    /// One new song similar to the last 3 liked of `seeds` (most recent last), fetched and marked as an
+    /// unliked recommendation; None if nothing worked. Only ❤ tracks seed, so taste does not drift rec -> rec.
     pub async fn next(&mut self, tg: &Tg, store: &Store, seeds: &[Track]) -> Result<Option<Track>> {
-        let recs = store.rec_ids().await?;
-        let own: Vec<&Track> = seeds.iter().filter(|t| !recs.contains(&t.document_id)).collect();
+        let own: Vec<&Track> = seeds.iter().filter(|t| t.liked).collect();
         let seeds = &own[own.len().saturating_sub(3)..];
         let key = crate::keys::lastfm().ok_or_else(|| anyhow!("no Last.fm key: build with LASTFM_API_KEY"))?;
         let mut bots = sources(tg, store).await?;
@@ -159,7 +158,7 @@ impl Recs {
         }
         // bots that missed a lot go last
         bots.sort_by_key(|(id, _)| self.misses.get(id).copied().unwrap_or(0) >= 3);
-        let owned: HashSet<_> = store.tracks("").await?.iter().flat_map(|t| artists::split(&t.performer).into_iter().map(move |a| (artists::key(&a), tkey(&t.title)))).collect();
+        let owned: HashSet<_> = store.all_tracks().await?.iter().flat_map(|t| artists::split(&t.performer).into_iter().map(move |a| (artists::key(&a), tkey(&t.title)))).collect();
         // shortcut: at most 4 Last.fm candidates per call so one slot never stalls for minutes
         let mut attempts = 0;
         for seed in seeds.iter().rev() {
@@ -176,7 +175,7 @@ impl Recs {
                         Ok(Some(t)) => {
                             store.mark_rec(t.document_id).await?;
                             self.misses.remove(chat);
-                            return Ok(Some(t));
+                            return Ok(Some(Track { liked: false, rec: true, ..t }));
                         }
                         _ => *self.misses.entry(*chat).or_default() += 1,
                     }

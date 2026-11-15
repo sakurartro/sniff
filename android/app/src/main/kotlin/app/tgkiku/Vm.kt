@@ -56,9 +56,6 @@ class Vm(a: Application) : AndroidViewModel(a) {
     private var orig: List<TrackInfo> = emptyList()
     var recsOn by mutableStateOf(prefs.getBoolean("recs", true))
         private set
-    var recIds by mutableStateOf(setOf<Long>()) // queued recommendations, marked in the queue
-        private set
-    private val skipped = HashSet<Long>()
     private var recJob: Job? = null
 
     private var qrJob: Job? = null
@@ -191,17 +188,15 @@ class Vm(a: Application) : AndroidViewModel(a) {
     /** Keeps one recommendation ahead: 3 own tracks, then a new one. A bot download is slow, so it is fetched
      *  while earlier tracks play; if it is late it simply lands later. */
     private fun prepareRec() {
-        if (!recsOn || recJob?.isActive == true || queue.drop(index + 1).any { it.documentId in recIds }) return
-        val seeds = queue.take(index + 1).filter { it.documentId !in skipped }.takeLast(10).map { it.documentId } // core drops recommendations and keeps the last 3 own
+        if (!recsOn || recJob?.isActive == true || queue.drop(index + 1).any { it.rec }) return
+        val seeds = queue.take(index + 1).takeLast(10).map { it.documentId } // core keeps the last 3 liked
         if (seeds.isEmpty()) return
         recJob = viewModelScope.launch {
             val r = try { core!!.recommend(seeds) } catch (e: CancellationException) { throw e } catch (_: Exception) { null } ?: return@launch
-            val lastRec = queue.take(index + 1).indexOfLast { it.documentId in recIds }
+            val lastRec = queue.take(index + 1).indexOfLast { it.rec }
             val at = maxOf(index + 1, (if (lastRec >= 0) lastRec else index) + 4).coerceAtMost(queue.size)
-            recIds = recIds + r.documentId
             queue = queue.toMutableList().also { it.add(at, r) }
             orig = if (shuffle) orig + r else queue
-            tracks = core!!.tracks("") // the fetched song joined the library
         }
     }
 
@@ -252,9 +247,19 @@ class Vm(a: Application) : AndroidViewModel(a) {
         try { core!!.streamStart(n.documentId, false) } catch (e: CancellationException) { throw e } catch (_: Exception) {}
     }
 
+    /** ❤: liked tracks are the library (Медиатека) and seed recommendations. Telegram is never touched. */
+    fun toggleLike() {
+        val t = current ?: return
+        val liked = !t.liked
+        run {
+            core!!.setLiked(t.documentId, liked)
+            val upd = { l: List<TrackInfo> -> l.map { if (it.documentId == t.documentId) it.copy(liked = liked) else it } }
+            queue = upd(queue); orig = upd(orig); results = upd(results)
+            tracks = core!!.tracks("")
+        }
+    }
+
     fun next() {
-        // a manual skip in the first 30s means "not this": it stops seeding recommendations
-        current?.let { if (player.playbackState != Player.STATE_ENDED && player.currentPosition < 30_000) skipped += it.documentId }
         if (index + 1 < queue.size) { index++; load() } else if (repeat == 1 && queue.isNotEmpty()) { index = 0; load() } }
     fun prev() { if (player.currentPosition > 3000 || index <= 0) { player.seekTo(0); pos = 0 } else { index--; load() } }
     // --- queue editing (only upcoming tracks, i > index, so the current track stays valid) ---

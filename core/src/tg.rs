@@ -396,6 +396,8 @@ fn track_of(m: &Message, chat_id: i64) -> Option<Track> {
         size: d.size().unwrap_or(0) as u64,
         chat_id,
         message_id: m.id(),
+        liked: true,
+        rec: false,
     })
 }
 

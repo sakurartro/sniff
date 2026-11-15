@@ -12,11 +12,15 @@ pub struct Track {
     pub size: u64,
     pub chat_id: i64,
     pub message_id: i32,
+    /// in the library (Медиатека); unliked tracks stay known but hidden
+    pub liked: bool,
+    /// came from recommendations
+    pub rec: bool,
 }
 
 pub struct Store(Connection);
 
-const COLS: &str = "document_id,title,performer,duration,size,chat_id,message_id";
+const COLS: &str = "document_id,title,performer,duration,size,chat_id,message_id,liked,rec";
 
 impl Store {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -34,6 +38,10 @@ impl Store {
         let _ = c.execute("ALTER TABLE chats ADD COLUMN bot TEXT", ()).await;
         // 1 = came from recommendations: never used as a seed, so taste does not drift rec -> rec -> rec
         let _ = c.execute("ALTER TABLE tracks ADD COLUMN rec INTEGER NOT NULL DEFAULT 0", ()).await;
+        // ❤ = in the library; chat tracks start liked, recommendations do not
+        if c.execute("ALTER TABLE tracks ADD COLUMN liked INTEGER NOT NULL DEFAULT 1", ()).await.is_ok() {
+            c.execute("UPDATE tracks SET liked = 1 - rec", ()).await?;
+        }
         Ok(Self(c))
     }
 
@@ -108,15 +116,21 @@ impl Store {
     }
 
     pub async fn mark_rec(&self, document_id: i64) -> Result<()> {
-        self.0.execute("UPDATE tracks SET rec=1 WHERE document_id=?1", params![document_id]).await?;
+        self.0.execute("UPDATE tracks SET rec=1, liked=0 WHERE document_id=?1", params![document_id]).await?;
         Ok(())
     }
 
-    pub async fn rec_ids(&self) -> Result<std::collections::HashSet<i64>> {
-        let mut rows = self.0.query("SELECT document_id FROM tracks WHERE rec=1", ()).await?;
-        let mut out = std::collections::HashSet::new();
+    pub async fn set_liked(&self, document_id: i64, liked: bool) -> Result<()> {
+        self.0.execute("UPDATE tracks SET liked=?2 WHERE document_id=?1", params![document_id, liked as i64]).await?;
+        Ok(())
+    }
+
+    /// Every known track, liked or not (what recommendations must not suggest again).
+    pub async fn all_tracks(&self) -> Result<Vec<Track>> {
+        let mut rows = self.0.query(&format!("SELECT {COLS} FROM tracks"), ()).await?;
+        let mut out = vec![];
         while let Some(r) = rows.next().await? {
-            out.insert(r.get(0)?);
+            out.push(row_track(&r)?);
         }
         Ok(out)
     }
@@ -152,15 +166,15 @@ impl Store {
         Ok(out)
     }
 
-    /// Empty query lists everything (newest first); otherwise FTS prefix search.
+    /// Empty query lists the library (liked, newest first); otherwise FTS prefix search over all tracks.
     pub async fn tracks(&self, query: &str) -> Result<Vec<Track>> {
         let q = query.split_whitespace().map(|w| format!("\"{}\"*", w.replace('"', ""))).collect::<Vec<_>>().join(" ");
         let mut rows = if q.is_empty() {
-            self.0.query(&format!("SELECT {COLS} FROM tracks ORDER BY message_id DESC"), ()).await?
+            self.0.query(&format!("SELECT {COLS} FROM tracks WHERE liked=1 ORDER BY message_id DESC"), ()).await?
         } else {
             self.0
                 .query(
-                    "SELECT t.document_id,t.title,t.performer,t.duration,t.size,t.chat_id,t.message_id FROM tracks t JOIN tracks_fts f ON f.rowid=t.document_id WHERE tracks_fts MATCH ?1 ORDER BY rank",
+                    "SELECT t.document_id,t.title,t.performer,t.duration,t.size,t.chat_id,t.message_id,t.liked,t.rec FROM tracks t JOIN tracks_fts f ON f.rowid=t.document_id WHERE tracks_fts MATCH ?1 ORDER BY rank",
                     params![q],
                 )
                 .await?
@@ -174,7 +188,7 @@ impl Store {
 }
 
 fn row_track(r: &Row) -> Result<Track> {
-    Ok(Track { document_id: r.get(0)?, title: r.get(1)?, performer: r.get(2)?, duration: r.get(3)?, size: r.get::<i64>(4)? as u64, chat_id: r.get(5)?, message_id: r.get(6)? })
+    Ok(Track { document_id: r.get(0)?, title: r.get(1)?, performer: r.get(2)?, duration: r.get(3)?, size: r.get::<i64>(4)? as u64, chat_id: r.get(5)?, message_id: r.get(6)?, liked: r.get::<i64>(7)? != 0, rec: r.get::<i64>(8)? != 0 })
 }
 
 #[cfg(test)]
@@ -182,7 +196,7 @@ mod tests {
     use super::*;
 
     fn t(id: i64, title: &str, chat: i64) -> Track {
-        Track { document_id: id, title: title.into(), performer: "Band".into(), duration: 100, size: 1, chat_id: chat, message_id: id as i32 }
+        Track { document_id: id, title: title.into(), performer: "Band".into(), duration: 100, size: 1, chat_id: chat, message_id: id as i32, liked: true, rec: false }
     }
 
     #[tokio::test]
@@ -205,8 +219,17 @@ mod tests {
         s.set_bot(1, "inline").await.unwrap();
         assert_eq!(s.selected_bots().await.unwrap(), vec![(1, Some("inline".into()))]);
         assert_eq!(s.last_played().await.unwrap()[&10], 0);
+        // a recommendation is known but not in the library until liked
         s.mark_rec(11).await.unwrap();
-        assert_eq!(s.rec_ids().await.unwrap(), [11].into());
+        assert_eq!(s.tracks("").await.unwrap().len(), 1);
+        assert_eq!(s.tracks("other").await.unwrap().len(), 1); // search sees it
+        assert_eq!(s.all_tracks().await.unwrap().len(), 2);
+        s.set_liked(11, true).await.unwrap();
+        assert!(s.track(11).await.unwrap().unwrap().liked);
+        // an unliked chat track survives a re-sync unliked
+        s.set_liked(10, false).await.unwrap();
+        assert!(!s.add_track(&t(10, "Hello World", 1)).await.unwrap());
+        assert!(!s.track(10).await.unwrap().unwrap().liked);
         s.touch(10).await.unwrap();
         assert!(s.last_played().await.unwrap()[&10] > 0);
     }

@@ -47,6 +47,10 @@ pub struct TrackInfo {
     pub message_id: i32,
     /// Individual artists of `performer` (feats split, spelling unified); empty when untagged.
     pub artists: Vec<String>,
+    /// ❤: in the library
+    pub liked: bool,
+    /// came from recommendations (✨)
+    pub rec: bool,
 }
 
 #[derive(uniffi::Record)]
@@ -57,7 +61,7 @@ pub struct SyncStep {
 
 fn info(t: Track, names: &HashMap<String, String>) -> TrackInfo {
     let artists = artists::split(&t.performer).into_iter().map(|a| names.get(&artists::key(&a)).cloned().unwrap_or(a)).collect();
-    TrackInfo { document_id: t.document_id, title: t.title, performer: t.performer, duration: t.duration, size: t.size, chat_id: t.chat_id, message_id: t.message_id, artists }
+    TrackInfo { document_id: t.document_id, title: t.title, performer: t.performer, duration: t.duration, size: t.size, chat_id: t.chat_id, message_id: t.message_id, artists, liked: t.liked, rec: t.rec }
 }
 
 #[derive(uniffi::Object)]
@@ -178,6 +182,11 @@ impl App {
     pub async fn connect_bot(&self, username: String) -> R<()> {
         self.tg.connect_bot(&self.store, &username).await.map_err(e)?;
         Ok(())
+    }
+
+    /// ❤ on/off: liked tracks are the library and seed recommendations. Never touches Telegram.
+    pub async fn set_liked(&self, document_id: i64, liked: bool) -> R<()> {
+        self.store.set_liked(document_id, liked).await.map_err(e)
     }
 
     /// Is any selected chat a usable source bot?

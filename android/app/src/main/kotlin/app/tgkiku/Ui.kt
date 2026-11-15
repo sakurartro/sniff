@@ -32,6 +32,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.ui.geometry.Offset
@@ -346,7 +347,8 @@ fun TrackList(vm: Vm, title: String, list: List<TrackInfo>, empty: String, heade
 
 @Composable
 fun TrackRow(t: TrackInfo, active: Boolean, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+    // not in the library (unliked): still findable by search, shown dimmed
+    Row(Modifier.fillMaxWidth().alpha(if (t.liked) 1f else 0.5f).clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Art(t, Modifier.size(48.dp), 12.dp)
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             Text(t.title, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground)
@@ -445,8 +447,13 @@ fun NowPlaying(vm: Vm, close: () -> Unit) {
         Box(Modifier.padding(bottom = 24.dp).size(width = 40.dp, height = 5.dp).clip(RoundedCornerShape(3.dp)).background(MaterialTheme.colorScheme.outlineVariant).clickable(onClick = close))
         Art(t, Modifier.fillMaxWidth().aspectRatio(1f), 14.dp)
         Spacer(Modifier.height(28.dp))
-        Text(t.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth())
-        Text(t.performer.ifBlank { "Неизвестный исполнитель" }, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary, maxLines = 1, modifier = Modifier.fillMaxWidth())
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(t.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(t.performer.ifBlank { "Неизвестный исполнитель" }, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary, maxLines = 1)
+            }
+            Ico(if (t.liked) "heart" else "heart0", 30.dp, if (t.liked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, Modifier.clickable { vm.toggleLike() })
+        }
         Spacer(Modifier.height(16.dp))
         Slider(
             vm.pos.coerceIn(0, dur).toFloat(), { vm.seek(it.toLong()) }, valueRange = 0f..dur.toFloat(),
@@ -485,7 +492,7 @@ fun QueueSheet(vm: Vm, dismiss: () -> Unit) {
         LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
             if (cur != null) {
                 item { Text("Сейчас играет", fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp)) }
-                item { QueueRow(cur, Modifier.height(rowH), cur.documentId in vm.recIds) }
+                item { QueueRow(cur, Modifier.height(rowH), cur.rec && !cur.liked) }
             }
             item { Text("Далее", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)) }
             itemsIndexed(vm.queue, key = { i, _ -> keys[i] }) { i, t ->
@@ -495,7 +502,7 @@ fun QueueSheet(vm: Vm, dismiss: () -> Unit) {
                 val box = rememberSwipeToDismissBoxState(confirmValueChange = { if (it != SwipeToDismissBoxValue.Settled) vm.removeAt(idx); true })
                 SwipeToDismissBox(box, modifier = Modifier.height(rowH).offset { androidx.compose.ui.unit.IntOffset(0, dy.toInt()) }.zIndex(if (dy != 0f) 1f else 0f),
                     backgroundContent = { Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer)) }) {
-                    QueueRow(t, Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow).clickable { vm.jumpTo(idx) }, t.documentId in vm.recIds) {
+                    QueueRow(t, Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow).clickable { vm.jumpTo(idx) }, t.rec && !t.liked) {
                         Text("≡", fontSize = 24.sp, modifier = Modifier.padding(horizontal = 12.dp).pointerInput(Unit) {
                             detectDragGesturesAfterLongPress({}, { dy = 0f }, { dy = 0f }) { ch, d ->
                                 ch.consume(); dy += d.y
@@ -566,6 +573,15 @@ fun Ico(kind: String, size: Dp, color: Color, modifier: Modifier = Modifier) {
                 drawPath(Path().apply { moveTo(0.66f * w, 0.14f * w); lineTo(0.82f * w, 0.28f * w); lineTo(0.66f * w, 0.42f * w); close() }, color)
                 drawPath(Path().apply { moveTo(0.34f * w, 0.58f * w); lineTo(0.18f * w, 0.72f * w); lineTo(0.34f * w, 0.86f * w); close() }, color)
                 if (kind == "repeat1") drawPath(Path().apply { moveTo(0.42f * w, 0.44f * w); lineTo(0.5f * w, 0.38f * w); lineTo(0.5f * w, 0.62f * w) }, color, style = Stroke(0.06f * w, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            }
+            "heart", "heart0" -> {
+                val p = Path().apply {
+                    moveTo(0.5f * w, 0.85f * w)
+                    cubicTo(0.05f * w, 0.55f * w, 0.1f * w, 0.12f * w, 0.5f * w, 0.3f * w)
+                    cubicTo(0.9f * w, 0.12f * w, 0.95f * w, 0.55f * w, 0.5f * w, 0.85f * w)
+                    close()
+                }
+                if (kind == "heart") drawPath(p, color) else drawPath(p, color, style = Stroke(0.07f * w, join = StrokeJoin.Round))
             }
             "spark" -> drawPath(Path().apply {
                 // four-pointed star: recommendations
