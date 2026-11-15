@@ -1,7 +1,8 @@
 use crate::keys::ApiKeys;
+use crate::recs::{matches, Cand};
 use crate::store::{Store, Track};
 use anyhow::{anyhow, Result};
-use grammers_client::{media::{Media, PhotoSize}, Client, SignInError};
+use grammers_client::{client::InlineResult, media::{Media, PhotoSize}, message::Message, peer::Peer, tl, Client, SignInError};
 use grammers_mtsender::{ConnectionParams, SenderPool};
 use grammers_session::{storages::SqliteSession, types::PeerId, Session};
 use grammers_mtsender::SenderPoolFatHandle;
@@ -152,25 +153,60 @@ impl Tg {
             seen += 1;
             // cursor moves per message so an interrupted run resumes without rescanning
             store.set_cursor(chat_id, m.id()).await?;
-            if let Some(Media::Document(d)) = m.media() {
-                if !d.mime_type().is_some_and(|t| t.starts_with("audio/")) {
-                    continue;
-                }
-                let t = Track {
-                    document_id: d.id(),
-                    title: d.audio_title().or(d.name()).unwrap_or("Unknown").to_string(),
-                    performer: d.performer().unwrap_or("").to_string(),
-                    duration: d.duration().unwrap_or(0.0) as u32,
-                    size: d.size().unwrap_or(0) as u64,
-                    chat_id,
-                    message_id: m.id(),
-                };
+            if let Some(t) = track_of(&m, chat_id) {
                 new += store.add_track(&t).await? as usize;
             }
             // shortcut: fixed 300ms spacing, replace with real FloodWait handling when syncing many chats
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
         Ok((new, false))
+    }
+
+    /// Resolve `@username` to a bot peer.
+    async fn bot(&self, username: &str) -> Result<grammers_session::types::PeerRef> {
+        let p = self.client.resolve_username(username.trim_start_matches('@')).await?.ok_or_else(|| anyhow!("no such user: {username}"))?;
+        if !matches!(&p, Peer::User(u) if u.is_bot()) {
+            return Err(anyhow!("{username} is not a bot"));
+        }
+        p.to_ref().await.map_err(|e| anyhow!("{e}"))?.ok_or_else(|| anyhow!("cannot reference {username}"))
+    }
+
+    /// True if the bot answers inline queries with audio (the only mode supported so far).
+    pub async fn probe_bot(&self, username: &str) -> Result<bool> {
+        let mut it = self.client.inline_query(self.bot(username).await?, "Imagine Dragons Believer");
+        for _ in 0..5 {
+            match it.next().await? {
+                Some(r) if audio_meta(&r).is_some() => return Ok(true),
+                Some(_) => {}
+                None => break,
+            }
+        }
+        Ok(false)
+    }
+
+    /// Ask the bot inline for the candidate; a result whose tags match is sent to Saved Messages and
+    /// indexed there, so it becomes an ordinary library track. None if the bot has no match.
+    pub async fn fetch_via_bot(&self, store: &Store, username: &str, c: &Cand) -> Result<Option<Track>> {
+        let bot = self.bot(username).await?;
+        let me = self.client.get_me().await?;
+        let me_ref = me.to_ref().await.map_err(|e| anyhow!("{e}"))?.ok_or_else(|| anyhow!("cannot reference self"))?;
+        let chat_id = me.id().bot_api_dialog_id().ok_or_else(|| anyhow!("bad self id"))?;
+        let mut it = self.client.inline_query(bot, &format!("{} {}", c.artist, c.title));
+        for _ in 0..10 {
+            let Some(r) = it.next().await? else { break };
+            let Some((performer, title, dur)) = audio_meta(&r) else { continue };
+            if !matches(c, &performer, &title, dur) {
+                continue;
+            }
+            r.send(me_ref.clone()).await?;
+            let m = self.client.iter_messages(me_ref.clone()).limit(1).next().await?.ok_or_else(|| anyhow!("sent audio not found"))?;
+            let t = track_of(&m, chat_id).ok_or_else(|| anyhow!("bot result was not an audio file"))?;
+            store.upsert_chat(chat_id, "Saved Messages").await?;
+            store.set_selected(chat_id, true).await?;
+            store.add_track(&t).await?;
+            return Ok(Some(t));
+        }
+        Ok(None)
     }
 
     pub async fn media_of(&self, store: &Store, document_id: i64) -> Result<Media> {
@@ -244,5 +280,40 @@ impl Tg {
             }
         }
         Err(anyhow!("chat {chat_id} not found in dialogs"))
+    }
+}
+
+fn track_of(m: &Message, chat_id: i64) -> Option<Track> {
+    let Some(Media::Document(d)) = m.media() else { return None };
+    if !d.mime_type().is_some_and(|t| t.starts_with("audio/")) {
+        return None;
+    }
+    Some(Track {
+        document_id: d.id(),
+        title: d.audio_title().or(d.name()).unwrap_or("Unknown").to_string(),
+        performer: d.performer().unwrap_or("").to_string(),
+        duration: d.duration().unwrap_or(0.0) as u32,
+        size: d.size().unwrap_or(0) as u64,
+        chat_id,
+        message_id: m.id(),
+    })
+}
+
+/// (performer, title, duration) of an inline result if it is audio. Cached-media results carry real tags;
+/// plain "audio" results follow the Telegram convention title = song, description = artist.
+fn audio_meta(r: &InlineResult) -> Option<(String, String, Option<u32>)> {
+    use tl::{enums::{BotInlineResult, Document, DocumentAttribute}, types};
+    match &r.raw {
+        BotInlineResult::BotInlineMediaResult(m) => {
+            let Some(Document::Document(d)) = &m.document else { return None };
+            d.attributes.iter().find_map(|a| match a {
+                DocumentAttribute::Audio(types::DocumentAttributeAudio { title, performer, duration, .. }) => {
+                    Some((performer.clone().unwrap_or_default(), title.clone().unwrap_or_default(), Some(*duration as u32)))
+                }
+                _ => None,
+            })
+        }
+        BotInlineResult::Result(x) if x.r#type == "audio" => Some((x.description.clone().unwrap_or_default(), x.title.clone().unwrap_or_default(), None)),
+        _ => None,
     }
 }

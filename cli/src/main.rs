@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::io::{self, Write};
-use tgkiku_core::{keys::ApiKeys, store::Store, tg::{SignIn, Tg}};
+use tgkiku_core::{keys::ApiKeys, recs, store::{Signal, Store}, tg::{SignIn, Tg}};
 
 fn prompt(msg: &str) -> Result<String> {
     print!("{msg}");
@@ -10,7 +10,7 @@ fn prompt(msg: &str) -> Result<String> {
     Ok(s.trim().to_string())
 }
 
-const HELP: &str = "usage: tgkiku <login | chats | select <chat_id> | unselect <chat_id> | sync [pages] | songs [query] | get <document_id> | cover [document_id]>\nenv: TGKIKU_DIR (data dir), TG_API_ID + TG_API_HASH (optional own keys)";
+const HELP: &str = "usage: tgkiku <login | chats | select <chat_id> | unselect <chat_id> | sync [pages] | songs [query] | get <document_id> | cover [document_id] | play|skip|like <document_id> | bot <@username> | bots | recs [n] | fetch [n]>\nenv: TGKIKU_DIR (data dir), TG_API_ID + TG_API_HASH (optional own keys)";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -34,6 +34,26 @@ async fn main() -> Result<()> {
         "songs" => {
             for t in store.tracks(args.get(1).map(String::as_str).unwrap_or("")).await? {
                 println!("{:>20}  {} — {}  [{}:{}]", t.document_id, t.performer, t.title, fmt_dur(t.duration), t.chat_id);
+            }
+            return Ok(());
+        }
+        "play" | "skip" | "like" => {
+            let kind = Signal::parse(cmd).expect("matched above");
+            if !store.record(args[1].parse()?, kind).await? {
+                anyhow::bail!("unknown track id");
+            }
+            return Ok(());
+        }
+        "bots" => {
+            for b in store.bots().await? {
+                println!("{b}");
+            }
+            return Ok(());
+        }
+        "recs" => {
+            let n = args.get(1).map(|p| p.parse()).transpose()?.unwrap_or(20);
+            for c in recs::suggest(&store, 5, 5).await?.iter().take(n) {
+                println!("{} — {}  [{}]", c.artist, c.title, fmt_dur(c.duration));
             }
             return Ok(());
         }
@@ -100,6 +120,40 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+        }
+        "bot" => {
+            let name = args.get(1).map(|b| b.trim_start_matches('@')).ok_or_else(|| anyhow::anyhow!("usage: bot <@username>"))?;
+            if !tg.probe_bot(name).await? {
+                anyhow::bail!("@{name} gave no audio for an inline query (chat-only bots are not supported yet)");
+            }
+            store.add_bot(name).await?;
+            println!("added @{name}");
+        }
+        "fetch" => {
+            let n = args.get(1).map(|p| p.parse()).transpose()?.unwrap_or(5);
+            let bots = store.bots().await?;
+            if bots.is_empty() {
+                anyhow::bail!("no bots: run `bot <@username>` first");
+            }
+            let (mut got, mut tried) = (0, 0);
+            for c in recs::suggest(&store, 5, 5).await? {
+                if got >= n || tried >= n * 4 {
+                    break;
+                }
+                tried += 1;
+                let mut hit = None;
+                for b in &bots {
+                    hit = tg.fetch_via_bot(&store, b, &c).await?;
+                    // shortcut: fixed pause, no FloodWait handling; add backoff if bots start rejecting
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    if hit.is_some() {
+                        break;
+                    }
+                }
+                println!("{} {} — {}", if hit.is_some() { "+" } else { "-" }, c.artist, c.title);
+                got += hit.is_some() as usize;
+            }
+            println!("{got} new tracks in Saved Messages");
         }
         "get" => {
             eprintln!("downloading...");
