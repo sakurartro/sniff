@@ -26,7 +26,7 @@ fun SettingsScreen(selected: AppTheme, onSelect: (AppTheme) -> Unit, onClose: ()
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).pointerInput(Unit) { detectTapGestures() }.systemBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Spacer(Modifier.weight(1f))
-            TextButton(onClose) { Text("Готово", color = Accent, fontWeight = FontWeight.SemiBold) }
+            TextButton(onClose) { Text("Готово", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
         }
         Column(Modifier.verticalScroll(rememberScrollState())) {
             LargeTitle("Настройки")
@@ -35,7 +35,7 @@ fun SettingsScreen(selected: AppTheme, onSelect: (AppTheme) -> Unit, onClose: ()
                     if (i > 0) HorizontalDivider(Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
                     Row(Modifier.fillMaxWidth().clickable { onSelect(t) }.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(t.title, fontSize = 16.sp, modifier = Modifier.weight(1f))
-                        if (t == selected) Text("✓", color = Accent, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        if (t == selected) Text("✓", color = MaterialTheme.colorScheme.primary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }

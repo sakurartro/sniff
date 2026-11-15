@@ -61,7 +61,7 @@ fun Root(vm: Vm) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(Modifier.fillMaxSize()) {
             when {
-                !vm.ready -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = Accent) }
+                !vm.ready -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = MaterialTheme.colorScheme.primary) }
                 !vm.authorized -> LoginScreen(vm)
                 else -> MainScreen(vm)
             }
@@ -69,7 +69,7 @@ fun Root(vm: Vm) {
                 Text(
                     it, color = Color.White, fontSize = 13.sp,
                     modifier = Modifier.align(Alignment.TopCenter).systemBarsPadding().padding(12.dp)
-                        .clip(RoundedCornerShape(12.dp)).background(Accent).clickable { vm.error = null }.padding(12.dp),
+                        .clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary).clickable { vm.error = null }.padding(12.dp),
                 )
             }
         }
@@ -97,7 +97,7 @@ fun LoginScreen(vm: Vm) {
             Step.Phone -> {
                 Field(phone, { phone = it }, "Телефон, например +79001234567", KeyboardType.Phone)
                 Primary("Получить код", !vm.busy && phone.isNotBlank()) { vm.sendPhone(phone) }
-                TextButton({ vm.startQr() }) { Text("Войти по QR / ссылке", color = Accent) }
+                TextButton({ vm.startQr() }) { Text("Войти по QR / ссылке", color = MaterialTheme.colorScheme.primary) }
             }
             Step.Code -> {
                 Field(code, { code = it }, "Код из Telegram", KeyboardType.Number)
@@ -109,15 +109,15 @@ fun LoginScreen(vm: Vm) {
             }
             Step.Qr -> {
                 val link = vm.qrLink
-                if (link == null) CircularProgressIndicator(color = Accent) else {
+                if (link == null) CircularProgressIndicator(color = MaterialTheme.colorScheme.primary) else {
                     Image(remember(link) { qrBitmap(link) }, null, Modifier.size(220.dp).clip(RoundedCornerShape(12.dp)), filterQuality = FilterQuality.None)
                     Text("Отсканируйте в Telegram: Настройки → Устройства", textAlign = TextAlign.Center, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
                     Primary("Открыть в Telegram на этом телефоне", true) { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
                 }
-                TextButton({ vm.backToPhone() }) { Text("Назад", color = Accent) }
+                TextButton({ vm.backToPhone() }) { Text("Назад", color = MaterialTheme.colorScheme.primary) }
             }
         }
-        if (vm.busy) LinearProgressIndicator(Modifier.padding(top = 12.dp).fillMaxWidth(), color = Accent)
+        if (vm.busy) LinearProgressIndicator(Modifier.padding(top = 12.dp).fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
     }
 }
 
@@ -127,13 +127,13 @@ fun Field(v: String, on: (String) -> Unit, hint: String, kb: KeyboardType, passw
         v, on, Modifier.fillMaxWidth().padding(bottom = 12.dp), singleLine = true, placeholder = { Text(hint) },
         shape = RoundedCornerShape(12.dp), keyboardOptions = KeyboardOptions(keyboardType = kb),
         visualTransformation = if (password) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
-        colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface, cursorColor = Accent),
+        colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface, cursorColor = MaterialTheme.colorScheme.primary),
     )
 }
 
 @Composable
 fun Primary(text: String, enabled: Boolean, onClick: () -> Unit) {
-    Button(onClick, Modifier.fillMaxWidth().height(50.dp), enabled = enabled, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White)) {
+    Button(onClick, Modifier.fillMaxWidth().height(50.dp), enabled = enabled, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)) {
         Text(text, fontWeight = FontWeight.SemiBold)
     }
 }
@@ -163,7 +163,7 @@ fun MainScreen(vm: Vm) {
             if (vm.current != null) MiniPlayer(vm) { full = true }
             TabBar(tab) { tab = it }
         }
-        Text("⚙", fontSize = 24.sp, color = Accent, modifier = Modifier.align(Alignment.TopEnd).systemBarsPadding().padding(top = 16.dp, end = 8.dp).clip(RoundedCornerShape(12.dp)).clickable { settings = true }.padding(horizontal = 12.dp, vertical = 4.dp))
+        Text("⚙", fontSize = 24.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.align(Alignment.TopEnd).systemBarsPadding().padding(top = 16.dp, end = 8.dp).clip(RoundedCornerShape(12.dp)).clickable { settings = true }.padding(horizontal = 12.dp, vertical = 4.dp))
         AnimatedVisibility(full, enter = slideInVertically { it }, exit = slideOutVertically { it }) { NowPlaying(vm) { full = false } }
         AnimatedVisibility(settings, enter = slideInVertically { it }, exit = slideOutVertically { it }) { SettingsScreen(vm.theme, { vm.setAppTheme(it) }) { settings = false } }
     }
@@ -178,7 +178,7 @@ fun TabBar(sel: Int, on: (Int) -> Unit) {
         Row(Modifier.fillMaxWidth().height(52.dp)) {
             listOf("Медиатека", "Поиск", "Чаты").forEachIndexed { i, s ->
                 Box(Modifier.weight(1f).fillMaxHeight().clickable { on(i) }, Alignment.Center) {
-                    Text(s, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = if (i == sel) Accent else MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(s, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = if (i == sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -210,7 +210,7 @@ fun TrackRow(t: TrackInfo, active: Boolean, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Art(t, Modifier.size(48.dp), 6.dp)
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-            Text(t.title, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (active) Accent else MaterialTheme.colorScheme.onBackground)
+            Text(t.title, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground)
             Text(t.performer.ifBlank { "Неизвестный исполнитель" }, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Text(fmt(t.duration.toLong() * 1000), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -224,7 +224,7 @@ fun SearchTab(vm: Vm) {
         TextField(
             q, { q = it; vm.search(it) }, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), singleLine = true,
             placeholder = { Text("Ваша медиатека") }, shape = RoundedCornerShape(12.dp),
-            colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface, cursorColor = Accent),
+            colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface, cursorColor = MaterialTheme.colorScheme.primary),
         )
     }
 }
@@ -236,11 +236,11 @@ fun ChatsTab(vm: Vm) {
         item {
             Column(Modifier.padding(horizontal = 20.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton({ vm.refreshChats() }, enabled = !vm.busy, shape = RoundedCornerShape(12.dp)) { Text("Обновить список", color = Accent) }
-                    Button({ vm.sync() }, enabled = !vm.busy, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White)) { Text("Синхронизировать") }
+                    OutlinedButton({ vm.refreshChats() }, enabled = !vm.busy, shape = RoundedCornerShape(12.dp)) { Text("Обновить список", color = MaterialTheme.colorScheme.primary) }
+                    Button({ vm.sync() }, enabled = !vm.busy, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)) { Text("Синхронизировать") }
                 }
                 vm.syncText?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp)) }
-                if (vm.busy) LinearProgressIndicator(Modifier.padding(top = 8.dp).fillMaxWidth(), color = Accent)
+                if (vm.busy) LinearProgressIndicator(Modifier.padding(top = 8.dp).fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
             }
         }
         itemsIndexed(vm.chats, key = { _, c -> c.id }) { _, c -> ChatRow(c) { vm.toggle(c) } }
@@ -285,7 +285,7 @@ fun NowPlaying(vm: Vm, close: () -> Unit) {
         Art(t, Modifier.fillMaxWidth().aspectRatio(1f), 14.dp)
         Spacer(Modifier.height(28.dp))
         Text(t.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth())
-        Text(t.performer.ifBlank { "Неизвестный исполнитель" }, fontSize = 18.sp, color = Accent, maxLines = 1, modifier = Modifier.fillMaxWidth())
+        Text(t.performer.ifBlank { "Неизвестный исполнитель" }, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary, maxLines = 1, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(16.dp))
         Slider(
             vm.pos.coerceIn(0, dur).toFloat(), { vm.seek(it.toLong()) }, valueRange = 0f..dur.toFloat(),
