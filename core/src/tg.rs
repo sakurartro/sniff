@@ -386,11 +386,12 @@ impl Tg {
             // oldest first, so the first audio after our request wins
             for m in fresh.into_iter().rev() {
                 seen = m.id();
-                if m.outgoing() {
-                    continue;
-                }
+                // audio first: an inline result we sent ("via @bot") carries the file in our own message
                 if let Some(t) = track_of(&m, chat_id) {
                     return Ok(Some(t));
+                }
+                if m.outgoing() {
+                    continue;
                 }
                 if !keep_waiting(&m) {
                     return Ok(None);

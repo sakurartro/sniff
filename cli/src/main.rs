@@ -10,7 +10,7 @@ fn prompt(msg: &str) -> Result<String> {
     Ok(s.trim().to_string())
 }
 
-const HELP: &str = "usage: sniff <login | chats | select <chat_id> | unselect <chat_id> | sync [pages] | songs [query] | get <document_id> | cover [document_id] | recs <seed document_id...>>\nenv: SNIFF_DIR (data dir), TG_API_ID + TG_API_HASH (optional own keys), LASTFM_API_KEY";
+const HELP: &str = "usage: sniff <login | chats | select <chat_id> | unselect <chat_id> | sync [pages] | songs [query] | get <document_id> | cover [document_id] | recs <seed document_id...> | bottest <bot> <artist> <title>>\nenv: SNIFF_DIR (data dir), TG_API_ID + TG_API_HASH (optional own keys), LASTFM_API_KEY";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -129,6 +129,31 @@ async fn main() -> Result<()> {
             match sniff_core::recs::Recs::default().next(&tg, &store, &seeds).await? {
                 Some(t) => println!("{:>20}  {} — {}  [{}:{}]", t.document_id, t.performer, t.title, fmt_dur(t.duration), t.chat_id),
                 None => println!("nothing found"),
+            }
+        }
+        "bottest" => {
+            // `bottest <@bot> <artist> <title>`: connects the bot like the app does, times search and download
+            let (bot, c) = (&args[1], sniff_core::recs::Cand { artist: args[2].clone(), title: args[3].clone(), duration: 0 });
+            let kind = tg.connect_bot(&store, bot).await?;
+            let chat = store.selected_bots().await?.into_iter().rev().find(|(_, k)| k.as_deref() == Some(kind.as_str())).map(|(id, _)| id).unwrap();
+            println!("{bot}: kind={kind}");
+            let t0 = std::time::Instant::now();
+            let got = if kind == "text" {
+                tg.fetch(&store, chat, &kind, &c).await?
+            } else {
+                let hits = tg.search_bot(chat, &format!("{} {}", c.artist, c.title), 15).await?;
+                println!("search: {} hits in {:.1}s", hits.len(), t0.elapsed().as_secs_f32());
+                for h in hits.iter().take(5) {
+                    println!("  {} — {} [{}] payload={:?}", h.cand.artist, h.cand.title, fmt_dur(h.cand.duration), h.payload);
+                }
+                let t1 = std::time::Instant::now();
+                let r = match hits.first() { Some(h) => tg.fetch_hit(&store, chat, h).await?, None => None };
+                println!("tap->audio: {:.1}s", t1.elapsed().as_secs_f32());
+                r
+            };
+            match got {
+                Some(t) => println!("got {} — {} [{}] in {:.1}s total", t.performer, t.title, fmt_dur(t.duration), t0.elapsed().as_secs_f32()),
+                None => println!("nothing in {:.1}s", t0.elapsed().as_secs_f32()),
             }
         }
         _ => println!("{HELP}"),
