@@ -2,7 +2,7 @@ use crate::keys::ApiKeys;
 use crate::store::{Store, Track};
 use anyhow::{anyhow, Result};
 use grammers_client::{media::{Media, PhotoSize}, Client, SignInError};
-use grammers_mtsender::SenderPool;
+use grammers_mtsender::{ConnectionParams, SenderPool};
 use grammers_session::{storages::SqliteSession, types::PeerId, Session};
 use grammers_mtsender::SenderPoolFatHandle;
 use std::{path::Path, sync::Arc, time::Duration};
@@ -26,7 +26,19 @@ pub struct Tg {
 impl Tg {
     pub async fn connect(session_file: impl AsRef<Path>, keys: ApiKeys) -> Result<Self> {
         let session = Arc::new(SqliteSession::open(session_file.as_ref()).await?);
-        let SenderPool { runner, handle, .. } = SenderPool::new(Arc::clone(&session), keys.id);
+        let SenderPool { runner, handle, .. } = SenderPool::with_configuration(
+            Arc::clone(&session),
+            keys.id,
+            // Telegram silently withholds login codes for the default library fingerprint; explicit params fix it.
+            ConnectionParams {
+                device_model: "Linux".into(),
+                system_version: "Arch Linux".into(),
+                app_version: "1.0".into(),
+                lang_code: "ru".into(),
+                system_lang_code: "ru-RU".into(),
+                ..Default::default()
+            },
+        );
         let client = Client::new(handle.clone());
         let pool = tokio::spawn(async move {
             let _ = runner.run().await;
