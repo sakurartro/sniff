@@ -11,6 +11,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -278,7 +280,7 @@ fun MiniPlayer(vm: Vm, open: () -> Unit) {
 fun NowPlaying(vm: Vm, close: () -> Unit) {
     val t = vm.current ?: return
     val dur = (t.duration.toLong() * 1000).coerceAtLeast(1)
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).systemBarsPadding().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).pointerInput(Unit) { detectTapGestures() }.systemBarsPadding().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.padding(bottom = 24.dp).size(width = 40.dp, height = 5.dp).clip(RoundedCornerShape(3.dp)).background(MaterialTheme.colorScheme.outlineVariant).clickable(onClick = close))
         Art(t, Modifier.fillMaxWidth().aspectRatio(1f), 14.dp)
         Spacer(Modifier.height(28.dp))
