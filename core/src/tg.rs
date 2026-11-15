@@ -5,7 +5,7 @@ use grammers_client::{media::{Media, PhotoSize}, Client, SignInError};
 use grammers_mtsender::{ConnectionParams, SenderPool};
 use grammers_session::{storages::SqliteSession, types::PeerId, Session};
 use grammers_mtsender::SenderPoolFatHandle;
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{collections::HashMap, path::Path, sync::{Arc, Mutex}, time::Duration};
 
 pub use grammers_client::client::LoginToken;
 pub use grammers_client::client::PasswordToken;
@@ -20,6 +20,7 @@ pub struct Tg {
     keys: ApiKeys,
     session: Arc<SqliteSession>,
     handle: SenderPoolFatHandle,
+    peers: Mutex<HashMap<i64, grammers_session::types::PeerRef>>,
     _pool: tokio::task::JoinHandle<()>,
 }
 
@@ -43,7 +44,7 @@ impl Tg {
         let pool = tokio::spawn(async move {
             let _ = runner.run().await;
         });
-        Ok(Self { client, keys, session, handle, _pool: pool })
+        Ok(Self { client, keys, session, handle, peers: Default::default(), _pool: pool })
     }
 
     pub async fn is_authorized(&self) -> Result<bool> {
@@ -218,11 +219,22 @@ impl Tg {
 
     async fn peer_ref(&self, chat_id: i64) -> Result<grammers_session::types::PeerRef> {
         let id = PeerId::from_bot_api_dialog_id(chat_id).ok_or_else(|| anyhow!("bad chat id"))?;
-        // shortcut: linear dialog scan per call, cache PeerRefs when this shows up in profiles
+        if let Some(p) = self.peers.lock().unwrap().get(&chat_id) {
+            return Ok(p.clone());
+        }
+        // one dialog scan per chat per app run; all dialogs seen on the way are cached too
         let mut dialogs = self.client.iter_dialogs();
+        let mut found = None;
         while let Some(d) = dialogs.next().await? {
+            let r = d.peer_ref();
             if d.peer().id() == id {
-                return Ok(d.peer_ref());
+                found = Some(r.clone());
+            }
+            if let Some(cid) = d.peer().id().bot_api_dialog_id() {
+                self.peers.lock().unwrap().insert(cid, r);
+            }
+            if found.is_some() {
+                return Ok(found.unwrap());
             }
         }
         Err(anyhow!("chat {chat_id} not found in dialogs"))
