@@ -21,15 +21,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun SettingsScreen(selected: AppTheme, onSelect: (AppTheme) -> Unit, onClose: () -> Unit) {
-    // the clickable swallows taps so they don't reach the screen underneath
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).pointerInput(Unit) { detectTapGestures() }.systemBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Spacer(Modifier.weight(1f))
-            TextButton(onClose) { Text("Готово", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
-        }
+fun SettingsScreen(selected: AppTheme, onSelect: (AppTheme) -> Unit, openChats: () -> Unit) {
+    Column(Modifier.fillMaxSize()) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             LargeTitle("Настройки")
+            SettingsSection("Telegram") {
+                Row(Modifier.fillMaxWidth().clickable(onClick = openChats).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Чаты", fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 18.sp)
+                }
+            }
             SettingsSection("Оформление") {
                 AppTheme.entries.forEachIndexed { i, t ->
                     if (i > 0) HorizontalDivider(Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)

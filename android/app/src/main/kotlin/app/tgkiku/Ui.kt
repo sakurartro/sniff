@@ -153,25 +153,26 @@ fun qrBitmap(text: String): ImageBitmap {
 fun MainScreen(vm: Vm) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var full by rememberSaveable { mutableStateOf(false) }
-    var settings by rememberSaveable { mutableStateOf(false) }
+    var chats by rememberSaveable { mutableStateOf(false) }
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().systemBarsPadding()) {
             Box(Modifier.weight(1f)) {
                 when (tab) {
-                    0 -> TrackList(vm, "Медиатека", vm.tracks, "Пусто. Выберите чаты во вкладке «Чаты» и синхронизируйте.")
+                    0 -> TrackList(vm, "Медиатека", vm.tracks, "Пусто. Выберите чаты в Настройки → Чаты и синхронизируйте.")
                     1 -> SearchTab(vm)
-                    else -> ChatsTab(vm)
+                    else -> if (chats) Column {
+                        TextButton({ chats = false }) { Text("‹ Настройки", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
+                        ChatsTab(vm)
+                    } else SettingsScreen(vm.theme, { vm.setAppTheme(it) }) { chats = true }
                 }
             }
             if (vm.current != null) MiniPlayer(vm) { full = true }
             TabBar(tab) { tab = it }
         }
-        Text("⚙", fontSize = 24.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.align(Alignment.TopEnd).systemBarsPadding().padding(top = 16.dp, end = 8.dp).clip(RoundedCornerShape(12.dp)).clickable { settings = true }.padding(horizontal = 12.dp, vertical = 4.dp))
         AnimatedVisibility(full, enter = slideInVertically { it }, exit = slideOutVertically { it }) { NowPlaying(vm) { full = false } }
-        AnimatedVisibility(settings, enter = slideInVertically { it }, exit = slideOutVertically { it }) { SettingsScreen(vm.theme, { vm.setAppTheme(it) }) { settings = false } }
     }
-    BackHandler(settings) { settings = false }
-    BackHandler(full && !settings) { full = false }
+    BackHandler(full) { full = false }
+    BackHandler(!full && tab == 2 && chats) { chats = false }
 }
 
 @Composable
@@ -179,7 +180,7 @@ fun TabBar(sel: Int, on: (Int) -> Unit) {
     Column {
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Row(Modifier.fillMaxWidth().height(52.dp)) {
-            listOf("Медиатека", "Поиск", "Чаты").forEachIndexed { i, s ->
+            listOf("Медиатека", "Поиск", "Настройки").forEachIndexed { i, s ->
                 Box(Modifier.weight(1f).fillMaxHeight().clickable { on(i) }, Alignment.Center) {
                     Text(s, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = if (i == sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
