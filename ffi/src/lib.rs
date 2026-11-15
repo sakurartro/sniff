@@ -53,6 +53,15 @@ pub struct TrackInfo {
     pub rec: bool,
 }
 
+/// A song a source bot offers in search, not downloaded yet.
+#[derive(uniffi::Record)]
+pub struct BotHit {
+    pub artist: String,
+    pub title: String,
+    /// seconds, 0 = unknown
+    pub duration: u32,
+}
+
 #[derive(uniffi::Record)]
 pub struct SyncStep {
     pub new_tracks: u32,
@@ -204,6 +213,27 @@ impl App {
         let Some(t) = self.recs.lock().await.next(&self.tg, &self.store, &tracks).await.map_err(e)? else { return Ok(None) };
         let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
         Ok(Some(info(t, &names)))
+    }
+
+    /// Up to `n` songs the first inline/deeplink source bot finds for `query`; empty if there is no such bot.
+    pub async fn bot_search(&self, query: String, n: u32) -> R<Vec<BotHit>> {
+        let bots = tgkiku_core::recs::sources(&self.tg, &self.store).await.map_err(e)?;
+        let Some((chat, _)) = bots.iter().find(|(_, k)| k != "text") else { return Ok(vec![]) };
+        let hits = self.tg.search_bot(*chat, &query, n as usize).await.map_err(e)?;
+        Ok(hits.into_iter().map(|c| BotHit { artist: c.artist, title: c.title, duration: c.duration }).collect())
+    }
+
+    /// Fetches a search hit from the source bots into the db, not liked (❤ adds it to the library). Slow.
+    pub async fn bot_get(&self, hit: BotHit) -> R<Option<TrackInfo>> {
+        let c = tgkiku_core::recs::Cand { artist: hit.artist, title: hit.title, duration: hit.duration };
+        for (chat, kind) in tgkiku_core::recs::sources(&self.tg, &self.store).await.map_err(e)? {
+            if let Ok(Some(t)) = self.tg.fetch(&self.store, chat, &kind, &c).await {
+                self.store.set_liked(t.document_id, false).await.map_err(e)?;
+                let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
+                return Ok(Some(info(Track { liked: false, ..t }, &names)));
+            }
+        }
+        Ok(None)
     }
 
     /// Starts downloading the track (`foreground` = it is the one playing, else it is a prefetch) and returns its size in bytes.

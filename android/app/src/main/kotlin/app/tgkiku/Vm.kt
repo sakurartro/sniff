@@ -154,6 +154,33 @@ class Vm(a: Application) : AndroidViewModel(a) {
 
     fun search(q: String) {
         viewModelScope.launch { try { results = if (q.isBlank()) emptyList() else core!!.tracks(q) } catch (e: Exception) { error = msg(e) } }
+        botJob?.cancel(); botHits = emptyList(); botSearching = false
+        if (q.isBlank() || KNOWN_BOTS.none { it in botSources }) return
+        botJob = viewModelScope.launch {
+            delay(700) // typing pause: one inline query per query, not per letter
+            botSearching = true
+            botHits = try { core!!.botSearch(q.trim(), 15u) } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+            botSearching = false
+        }
+    }
+
+    /** "Из Telegram" section of search: songs the source bot offers, fetched on tap. */
+    var botHits by mutableStateOf<List<BotHit>>(emptyList())
+        private set
+    var botSearching by mutableStateOf(false)
+        private set
+    var fetching by mutableStateOf<BotHit?>(null)
+        private set
+    private var botJob: Job? = null
+    fun playHit(h: BotHit) {
+        if (fetching != null) return
+        fetching = h
+        viewModelScope.launch {
+            try {
+                val t = core!!.botGet(h)
+                if (t == null) error = "Бот не нашёл этот трек" else play(listOf(t), 0)
+            } catch (e: CancellationException) { throw e } catch (e: Exception) { error = msg(e) } finally { fetching = null }
+        }
     }
 
     // --- player ---
@@ -169,7 +196,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
         recsOn = !recsOn; prefs.edit().putBoolean("recs", recsOn).apply()
         if (!recsOn) { recJob?.cancel(); return }
         prepareRec()
-        viewModelScope.launch { try { if (!core!!.hasRecSource()) error = "Подключите бота в Настройки → Рекомендации" } catch (e: CancellationException) { throw e } catch (_: Exception) {} }
+        viewModelScope.launch { try { if (!core!!.hasRecSource()) error = "Подключите бота в Настройки → Музыкальные боты" } catch (e: CancellationException) { throw e } catch (_: Exception) {} }
     }
 
     /** Lowercase usernames connected from the settings screen (for the "connected" mark). */

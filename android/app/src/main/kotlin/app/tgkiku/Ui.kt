@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
+import uniffi.tgkiku_ffi.BotHit
 import uniffi.tgkiku_ffi.Chat
 import uniffi.tgkiku_ffi.TrackInfo
 
@@ -358,13 +359,31 @@ fun TrackRow(t: TrackInfo, active: Boolean, onClick: () -> Unit) {
     }
 }
 
+/** A song the bot offers, not downloaded yet: no cover until it is fetched. */
+@Composable
+fun HitRow(h: BotHit, loading: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
+            if (loading) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) else Text("♪", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 20.sp)
+        }
+        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+            Text(h.title, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(h.artist, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (h.duration > 0u) Text(fmt(h.duration.toLong() * 1000), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 @Composable
 fun SearchTab(vm: Vm, push: (String) -> Unit) {
     val q = vm.query
     val chats = vm.chats.filter { it.selected }
     val found = chats.filter { it.title.contains(q, true) }
     val artists = vm.results.flatMap { it.artists }.distinct().take(10)
-    val tracks = vm.results.take(30)
+    var shown by remember(q) { mutableIntStateOf(5) }
+    var hitsShown by remember(q) { mutableIntStateOf(5) }
+    val tracks = vm.results.take(shown)
+    val hits = vm.botHits.take(hitsShown)
     LazyColumn(Modifier.fillMaxSize()) {
         item { LargeTitle("Поиск") }
         item {
@@ -379,6 +398,13 @@ fun SearchTab(vm: Vm, push: (String) -> Unit) {
             if (tracks.isNotEmpty()) {
                 item { Section("Треки") }
                 itemsIndexed(tracks) { i, t -> TrackRow(t, vm.current?.documentId == t.documentId) { vm.play(tracks, i) } }
+                if (vm.results.size > shown) item { NavRow("Ещё") { shown += 5 } }
+            }
+            if (vm.botSearching || hits.isNotEmpty()) {
+                item { Section("Из Telegram") }
+                if (vm.botSearching) item { Text("Ищу у бота…", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)) }
+                items(hits) { h -> HitRow(h, vm.fetching == h) { vm.playHit(h) } }
+                if (vm.botHits.size > hitsShown) item { NavRow("Ещё") { hitsShown += 5 } }
             }
             if (artists.isNotEmpty()) {
                 item { Section("Исполнители") }
@@ -388,7 +414,7 @@ fun SearchTab(vm: Vm, push: (String) -> Unit) {
                 item { Section("Чаты") }
                 items(found) { c -> NavRow(c.title) { push("chat:${c.id}") } }
             }
-            if (tracks.isEmpty() && found.isEmpty()) item { Text("Ничего не найдено.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(18.dp)) }
+            if (tracks.isEmpty() && found.isEmpty() && hits.isEmpty() && !vm.botSearching) item { Text("Ничего не найдено.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(18.dp)) }
         }
     }
 }

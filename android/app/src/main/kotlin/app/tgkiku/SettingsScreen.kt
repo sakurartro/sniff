@@ -62,18 +62,18 @@ fun SettingsScreen(vm: Vm, selected: AppTheme, onSelect: (AppTheme) -> Unit, mod
 }
 
 /** Bots the app was tested with. */
-private val KNOWN_BOTS = listOf("deezload2bot")
+val KNOWN_BOTS = listOf("deezload2bot")
 
 @Composable
 private fun RecsSection(vm: Vm) {
-    SettingsSection("Рекомендации") {
+    SettingsSection("Музыкальные боты") {
         Row(Modifier.fillMaxWidth().clickable { vm.toggleRecs() }.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Рекомендации в очереди", fontSize = 16.sp, modifier = Modifier.weight(1f))
             Switch(vm.recsOn, { vm.toggleRecs() })
         }
         HorizontalDivider(Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
         Text(
-            "Каждый 4-й трек в очереди — новый, похожий на то, что вы слушаете. Музыку для них приложение берёт у бота-источника. " +
+            "Бот-источник даёт музыку для поиска и рекомендаций: каждый 4-й трек в очереди — новый, похожий на то, что вы слушаете. " +
                 "Ниже — боты, с которыми приложение проверено. Это не реклама, мы с ними никак не связаны.",
             fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
         )

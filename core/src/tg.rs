@@ -253,6 +253,29 @@ impl Tg {
         r
     }
 
+    /// Songs an inline/deeplink source bot finds for a free-text query, up to `n`, deduplicated.
+    /// Only an inline query: nothing is sent to the bot chat until one is fetched.
+    pub async fn search_bot(&self, chat_id: i64, query: &str, n: usize) -> Result<Vec<Cand>> {
+        let mut it = self.client.inline_query(self.peer_ref(chat_id).await?, query);
+        let (mut out, mut seen) = (vec![], std::collections::HashSet::new());
+        for _ in 0..n * 3 {
+            let Some(r) = it.next().await? else { break };
+            let card = Card::of(&r.raw);
+            let c = match card.audio {
+                Some((p, t, d)) => Cand { artist: p, title: t, duration: d },
+                None if card.payload.is_some() => Cand { artist: card.artist, title: card.title, duration: 0 },
+                None => continue,
+            };
+            if !c.artist.is_empty() && seen.insert((crate::artists::key(&c.artist), recs::tkey(&c.title))) {
+                out.push(c);
+                if out.len() == n {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     async fn fetch_quiet(&self, store: &Store, chat_id: i64, peer: &grammers_session::types::PeerRef, kind: &str, c: &Cand) -> Result<Option<Track>> {
         let peer = peer.clone();
         let last = self.client.iter_messages(peer.clone()).limit(1).next().await?.map_or(0, |m| m.id());
