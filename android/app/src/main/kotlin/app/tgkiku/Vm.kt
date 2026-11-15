@@ -192,7 +192,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
      *  while earlier tracks play; if it is late it simply lands later. */
     private fun prepareRec() {
         if (!recsOn || recJob?.isActive == true || queue.drop(index + 1).any { it.documentId in recIds }) return
-        val seeds = queue.take(index + 1).filter { it.documentId !in skipped }.takeLast(3).map { it.documentId }
+        val seeds = queue.take(index + 1).filter { it.documentId !in skipped }.takeLast(10).map { it.documentId } // core drops recommendations and keeps the last 3 own
         if (seeds.isEmpty()) return
         recJob = viewModelScope.launch {
             val r = try { core!!.recommend(seeds) } catch (e: CancellationException) { throw e } catch (_: Exception) { null } ?: return@launch

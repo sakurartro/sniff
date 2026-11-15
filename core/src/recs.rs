@@ -146,8 +146,12 @@ pub struct Recs {
 }
 
 impl Recs {
-    /// One new song similar to `seeds` (most recent last), fetched into the library; None if nothing worked.
+    /// One new song similar to the last 3 of `seeds` (most recent last) that are not recommendations themselves,
+    /// fetched into the library and marked as a recommendation; None if nothing worked.
     pub async fn next(&mut self, tg: &Tg, store: &Store, seeds: &[Track]) -> Result<Option<Track>> {
+        let recs = store.rec_ids().await?;
+        let own: Vec<&Track> = seeds.iter().filter(|t| !recs.contains(&t.document_id)).collect();
+        let seeds = &own[own.len().saturating_sub(3)..];
         let key = crate::keys::lastfm().ok_or_else(|| anyhow!("no Last.fm key: build with LASTFM_API_KEY"))?;
         let mut bots = sources(tg, store).await?;
         if bots.is_empty() {
@@ -170,6 +174,7 @@ impl Recs {
                 for (chat, kind) in &bots {
                     match tg.fetch(store, *chat, kind, &c).await {
                         Ok(Some(t)) => {
+                            store.mark_rec(t.document_id).await?;
                             self.misses.remove(chat);
                             return Ok(Some(t));
                         }

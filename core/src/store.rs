@@ -32,6 +32,8 @@ impl Store {
         let _ = c.execute("ALTER TABLE tracks ADD COLUMN last_played INTEGER NOT NULL DEFAULT 0", ()).await;
         // source bot kind: NULL = not checked yet, '' = not a usable bot, else inline/deeplink/text
         let _ = c.execute("ALTER TABLE chats ADD COLUMN bot TEXT", ()).await;
+        // 1 = came from recommendations: never used as a seed, so taste does not drift rec -> rec -> rec
+        let _ = c.execute("ALTER TABLE tracks ADD COLUMN rec INTEGER NOT NULL DEFAULT 0", ()).await;
         Ok(Self(c))
     }
 
@@ -103,6 +105,20 @@ impl Store {
             self.0.execute("INSERT INTO tracks_fts(rowid,title,performer) VALUES(?1,?2,?3)", params![t.document_id, t.title.as_str(), t.performer.as_str()]).await?;
         }
         Ok(n > 0)
+    }
+
+    pub async fn mark_rec(&self, document_id: i64) -> Result<()> {
+        self.0.execute("UPDATE tracks SET rec=1 WHERE document_id=?1", params![document_id]).await?;
+        Ok(())
+    }
+
+    pub async fn rec_ids(&self) -> Result<std::collections::HashSet<i64>> {
+        let mut rows = self.0.query("SELECT document_id FROM tracks WHERE rec=1", ()).await?;
+        let mut out = std::collections::HashSet::new();
+        while let Some(r) = rows.next().await? {
+            out.insert(r.get(0)?);
+        }
+        Ok(out)
     }
 
     /// Marks the track as just used (LRU cache eviction order).
@@ -189,6 +205,8 @@ mod tests {
         s.set_bot(1, "inline").await.unwrap();
         assert_eq!(s.selected_bots().await.unwrap(), vec![(1, Some("inline".into()))]);
         assert_eq!(s.last_played().await.unwrap()[&10], 0);
+        s.mark_rec(11).await.unwrap();
+        assert_eq!(s.rec_ids().await.unwrap(), [11].into());
         s.touch(10).await.unwrap();
         assert!(s.last_played().await.unwrap()[&10] > 0);
     }
