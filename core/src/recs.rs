@@ -44,24 +44,42 @@ pub fn matches(c: &Cand, performer: &str, title: &str, duration: Option<u32>) ->
     artist_ok && tkey(title) == tkey(&c.title) && dur_ok
 }
 
-/// Last.fm track.getSimilar.
+/// Last.fm track.getSimilar; many hits have no similar tracks, then top tracks of similar artists stand in.
 pub fn similar(api_key: &str, artist: &str, title: &str, limit: usize) -> Result<Vec<Cand>> {
+    let n = limit.to_string();
+    let v = lastfm(api_key, &[("method", "track.getsimilar"), ("artist", artist), ("track", title), ("autocorrect", "1"), ("limit", &n)])?;
+    let out = cands(&v["similartracks"]["track"]);
+    if !out.is_empty() {
+        return Ok(out);
+    }
+    let v = lastfm(api_key, &[("method", "artist.getsimilar"), ("artist", artist), ("autocorrect", "1"), ("limit", "5")])?;
+    let mut out = vec![];
+    for a in v["similarartists"]["artist"].as_array().map_or(&[][..], Vec::as_slice).iter().filter_map(|a| a["name"].as_str()) {
+        out.extend(cands(&lastfm(api_key, &[("method", "artist.gettoptracks"), ("artist", a), ("limit", "3")])?["toptracks"]["track"]));
+    }
+    Ok(out)
+}
+
+fn lastfm(api_key: &str, q: &[(&str, &str)]) -> Result<Value> {
     let mut r = ureq::get("https://ws.audioscrobbler.com/2.0/")
         .header("User-Agent", "tgkiku/0.1")
-        .query_pairs([("method", "track.getsimilar"), ("artist", artist), ("track", title), ("api_key", api_key), ("format", "json"), ("autocorrect", "1"), ("limit", &limit.to_string())])
+        .query_pairs(q.iter().copied().chain([("api_key", api_key), ("format", "json")]))
         .config()
         .http_status_as_error(false)
         .build()
         .call()?;
-    parse_similar(&r.body_mut().read_json()?)
-}
-
-fn parse_similar(v: &Value) -> Result<Vec<Cand>> {
+    let v: Value = r.body_mut().read_json()?;
     if let Some(e) = v.get("message").filter(|_| v.get("error").is_some()) {
         bail!("last.fm: {e}");
     }
-    let tracks = v["similartracks"]["track"].as_array().map_or(&[][..], Vec::as_slice);
-    Ok(tracks
+    Ok(v)
+}
+
+/// Tracks array of track.getSimilar / artist.getTopTracks.
+fn cands(tracks: &Value) -> Vec<Cand> {
+    tracks
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
         .iter()
         .filter_map(|t| {
             let artist = t["artist"]["name"].as_str()?.to_string();
@@ -70,7 +88,7 @@ fn parse_similar(v: &Value) -> Result<Vec<Cand>> {
             let duration = t["duration"].as_u64().or_else(|| t["duration"].as_str()?.parse().ok()).unwrap_or(0) as u32;
             Some(Cand { artist, title, duration })
         })
-        .collect())
+        .collect()
 }
 
 /// `?start=` payload of a t.me deep link ("https://t.me/somebot?start=deezertrack1" -> "deezertrack1").
@@ -101,6 +119,25 @@ pub fn button_matches(c: &Cand, caption: &str) -> bool {
     cap.contains(&artists::key(&c.artist)) && cap.contains(&tkey(&c.title))
 }
 
+/// Selected chats usable as source bots, (chat id, kind); chats not checked yet are checked once and remembered.
+pub async fn sources(tg: &Tg, store: &Store) -> Result<Vec<(i64, String)>> {
+    let mut bots = vec![];
+    for (id, kind) in store.selected_bots().await? {
+        let kind = match kind {
+            Some(k) => k,
+            None => {
+                let k = tg.detect_bot(id).await?;
+                store.set_bot(id, &k).await?;
+                k
+            }
+        };
+        if !kind.is_empty() {
+            bots.push((id, kind));
+        }
+    }
+    Ok(bots)
+}
+
 /// Per-session state: songs already tried, and bots that keep missing.
 #[derive(Default)]
 pub struct Recs {
@@ -112,20 +149,7 @@ impl Recs {
     /// One new song similar to `seeds` (most recent last), fetched into the library; None if nothing worked.
     pub async fn next(&mut self, tg: &Tg, store: &Store, seeds: &[Track]) -> Result<Option<Track>> {
         let key = crate::keys::lastfm().ok_or_else(|| anyhow!("no Last.fm key: build with LASTFM_API_KEY"))?;
-        let mut bots = vec![];
-        for (id, kind) in store.selected_bots().await? {
-            let kind = match kind {
-                Some(k) => k,
-                None => {
-                    let k = tg.detect_bot(id).await?;
-                    store.set_bot(id, &k).await?;
-                    k
-                }
-            };
-            if !kind.is_empty() {
-                bots.push((id, kind));
-            }
-        }
+        let mut bots = sources(tg, store).await?;
         if bots.is_empty() {
             return Ok(None);
         }
@@ -192,10 +216,8 @@ mod tests {
     #[test]
     fn lastfm_json() {
         let v: Value = serde_json::from_str(r#"{"similartracks":{"track":[{"name":"Thunder","duration":187,"artist":{"name":"Imagine Dragons"}},{"name":"X","duration":"200","artist":{"name":"Y"}},{"nope":1}]}}"#).unwrap();
-        assert_eq!(parse_similar(&v).unwrap(), vec![c("Imagine Dragons", "Thunder", 187), c("Y", "X", 200)]);
-        let err: Value = serde_json::from_str(r#"{"error":10,"message":"Invalid API key"}"#).unwrap();
-        assert!(parse_similar(&err).is_err());
-        assert!(parse_similar(&Value::Null).unwrap().is_empty());
+        assert_eq!(cands(&v["similartracks"]["track"]), vec![c("Imagine Dragons", "Thunder", 187), c("Y", "X", 200)]);
+        assert!(cands(&Value::Null).is_empty());
     }
 
     #[test]

@@ -168,7 +168,25 @@ class Vm(a: Application) : AndroidViewModel(a) {
         else { queue = orig; index = queue.indexOf(c).coerceAtLeast(0) }
     }
     fun cycleRepeat() { repeat = (repeat + 1) % 3 }
-    fun toggleRecs() { recsOn = !recsOn; prefs.edit().putBoolean("recs", recsOn).apply(); if (!recsOn) recJob?.cancel() else prepareRec() }
+    fun toggleRecs() {
+        recsOn = !recsOn; prefs.edit().putBoolean("recs", recsOn).apply()
+        if (!recsOn) { recJob?.cancel(); return }
+        prepareRec()
+        viewModelScope.launch { try { if (!core!!.hasRecSource()) error = "Подключите бота в Настройки → Рекомендации" } catch (e: CancellationException) { throw e } catch (_: Exception) {} }
+    }
+
+    /** Lowercase usernames connected from the settings screen (for the "connected" mark). */
+    var botSources by mutableStateOf(prefs.getStringSet("bots", emptySet())!!.toSet())
+        private set
+    fun connectBot(username: String) {
+        val name = username.trim().removePrefix("@")
+        if (name.isEmpty()) return
+        run {
+            core!!.connectBot(name)
+            botSources = botSources + name.lowercase(); prefs.edit().putStringSet("bots", botSources).apply()
+            chats = core!!.chats()
+        }
+    }
 
     /** Keeps one recommendation ahead: 3 own tracks, then a new one. A bot download is slow, so it is fetched
      *  while earlier tracks play; if it is late it simply lands later. */

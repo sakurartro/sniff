@@ -172,7 +172,7 @@ fun MainScreen(vm: Vm) {
         Column(Modifier.fillMaxSize().systemBarsPadding()) {
             Box(Modifier.weight(1f)) {
                 when {
-                    tab == 3 -> if (route == "manage") Sub(pop) { ChatsTab(vm) } else SettingsScreen(vm.theme, { vm.setAppTheme(it) }, vm.mode, { vm.setThemeMode(it) }) { push("manage") }
+                    tab == 3 -> if (route == "manage") Sub(pop) { ChatsTab(vm) } else SettingsScreen(vm, vm.theme, { vm.setAppTheme(it) }, vm.mode, { vm.setThemeMode(it) }) { push("manage") }
                     route.isNotEmpty() -> Sub(pop) { Detail(vm, route, push) }
                     tab == 0 -> HomeTab(vm, push)
                     tab == 1 -> SearchTab(vm, push)

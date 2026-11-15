@@ -168,32 +168,53 @@ impl Tg {
         let id = PeerId::from_bot_api_dialog_id(chat_id).ok_or_else(|| anyhow!("bad chat id"))?;
         let mut dialogs = self.client.iter_dialogs();
         while let Some(d) = dialogs.next().await? {
-            if d.peer().id() != id {
-                continue;
+            if d.peer().id() == id {
+                return self.bot_kind(d.peer(), d.peer_ref()).await;
             }
-            let Peer::User(u) = d.peer() else { return Ok(String::new()) };
-            let tl::enums::User::User(raw) = &u.raw else { return Ok(String::new()) };
-            if !raw.bot {
-                return Ok(String::new());
-            }
-            if raw.bot_inline_placeholder.is_none() {
-                return Ok("text".into());
-            }
-            let mut it = self.client.inline_query(d.peer_ref(), "Imagine Dragons Believer");
-            let mut kind = "text";
-            for _ in 0..5 {
-                let Some(r) = it.next().await? else { break };
-                let card = Card::of(&r.raw);
-                if card.audio.is_some() {
-                    return Ok("inline".into());
-                }
-                if card.payload.is_some() {
-                    kind = "deeplink";
-                }
-            }
-            return Ok(kind.into());
         }
         Err(anyhow!("chat {chat_id} not found in dialogs"))
+    }
+
+    async fn bot_kind(&self, peer: &Peer, peer_ref: grammers_session::types::PeerRef) -> Result<String> {
+        let Peer::User(u) = peer else { return Ok(String::new()) };
+        let tl::enums::User::User(raw) = &u.raw else { return Ok(String::new()) };
+        if !raw.bot {
+            return Ok(String::new());
+        }
+        if raw.bot_inline_placeholder.is_none() {
+            return Ok("text".into());
+        }
+        let mut it = self.client.inline_query(peer_ref, "Imagine Dragons Believer");
+        let mut kind = "text";
+        for _ in 0..5 {
+            let Some(r) = it.next().await? else { break };
+            let card = Card::of(&r.raw);
+            if card.audio.is_some() {
+                return Ok("inline".into());
+            }
+            if card.payload.is_some() {
+                kind = "deeplink";
+            }
+        }
+        Ok(kind.into())
+    }
+
+    /// Start `@username` (so it has a chat with us) and select it as a recommendation source. Returns its kind.
+    pub async fn connect_bot(&self, store: &Store, username: &str) -> Result<String> {
+        let name = username.trim().trim_start_matches('@');
+        let p = self.client.resolve_username(name).await?.ok_or_else(|| anyhow!("@{name} не найден"))?;
+        let r = p.to_ref().await.map_err(|e| anyhow!("{e}"))?.ok_or_else(|| anyhow!("@{name} недоступен"))?;
+        let kind = self.bot_kind(&p, r.clone()).await?;
+        if kind.is_empty() {
+            return Err(anyhow!("@{name} не бот"));
+        }
+        let chat_id = p.id().bot_api_dialog_id().ok_or_else(|| anyhow!("bad id"))?;
+        self.client.send_message(r.clone(), "/start").await?;
+        self.peers.lock().unwrap().insert(chat_id, r);
+        store.upsert_chat(chat_id, p.name().unwrap_or(name)).await?;
+        store.set_selected(chat_id, true).await?;
+        store.set_bot(chat_id, &kind).await?;
+        Ok(kind)
     }
 
     /// Get the song from a source bot; the audio lands in the bot chat and is added to the library.

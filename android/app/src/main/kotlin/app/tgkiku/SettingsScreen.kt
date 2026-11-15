@@ -10,9 +10,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -22,7 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun SettingsScreen(selected: AppTheme, onSelect: (AppTheme) -> Unit, mode: Int, onMode: (Int) -> Unit, openChats: () -> Unit) {
+fun SettingsScreen(vm: Vm, selected: AppTheme, onSelect: (AppTheme) -> Unit, mode: Int, onMode: (Int) -> Unit, openChats: () -> Unit) {
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             LargeTitle("Настройки")
@@ -32,6 +36,7 @@ fun SettingsScreen(selected: AppTheme, onSelect: (AppTheme) -> Unit, mode: Int, 
                     Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 18.sp)
                 }
             }
+            RecsSection(vm)
             SettingsSection("Оформление") {
                 Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf(1 to "Светлый", 2 to "Тёмный").forEach { (m, s) ->
@@ -52,6 +57,42 @@ fun SettingsScreen(selected: AppTheme, onSelect: (AppTheme) -> Unit, mode: Int, 
                     }
                 }
             }
+        }
+    }
+}
+
+/** Bots the app was tested with. */
+private val KNOWN_BOTS = listOf("deezload2bot")
+
+@Composable
+private fun RecsSection(vm: Vm) {
+    SettingsSection("Рекомендации") {
+        Row(Modifier.fillMaxWidth().clickable { vm.toggleRecs() }.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Рекомендации в очереди", fontSize = 16.sp, modifier = Modifier.weight(1f))
+            Switch(vm.recsOn, { vm.toggleRecs() })
+        }
+        HorizontalDivider(Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+        Text(
+            "Каждый 4-й трек в очереди — новый, похожий на то, что вы слушаете. Музыку для них приложение берёт у бота-источника. " +
+                "Ниже — боты, с которыми приложение проверено. Это не реклама, мы с ними никак не связаны.",
+            fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+        )
+        KNOWN_BOTS.forEach { b ->
+            HorizontalDivider(Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("@$b", fontSize = 16.sp, modifier = Modifier.weight(1f))
+                if (b in vm.botSources) Text("✓ Подключён", color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(12.dp))
+                else TextButton({ vm.connectBot(b) }, enabled = !vm.busy) { Text("Подключить") }
+            }
+        }
+        HorizontalDivider(Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+        var own by remember { mutableStateOf("") }
+        Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextField(
+                own, { own = it }, Modifier.weight(1f), placeholder = { Text("Свой бот: @username") }, singleLine = true,
+                colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
+            )
+            TextButton({ vm.connectBot(own); own = "" }, enabled = own.isNotBlank() && !vm.busy) { Text("Подключить") }
         }
     }
 }

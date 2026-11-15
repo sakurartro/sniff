@@ -174,6 +174,17 @@ impl App {
         Ok(self.store.tracks(&query).await.map_err(e)?.into_iter().map(|t| info(t, &names)).collect())
     }
 
+    /// Starts `@username` and selects it as a recommendation source; errors are user-facing (not found, not a bot).
+    pub async fn connect_bot(&self, username: String) -> R<()> {
+        self.tg.connect_bot(&self.store, &username).await.map_err(e)?;
+        Ok(())
+    }
+
+    /// Is any selected chat a usable source bot?
+    pub async fn has_rec_source(&self) -> R<bool> {
+        Ok(!tgkiku_core::recs::sources(&self.tg, &self.store).await.map_err(e)?.is_empty())
+    }
+
     /// One new song similar to `seeds` (document ids, most recent last), fetched from a selected source bot
     /// into the library; None if nothing matched. Slow (a bot download), call ahead of time.
     pub async fn recommend(&self, seeds: Vec<i64>) -> R<Option<TrackInfo>> {
