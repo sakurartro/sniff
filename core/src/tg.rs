@@ -173,11 +173,17 @@ impl Tg {
         Ok((new, false))
     }
 
-    async fn media_of(&self, store: &Store, document_id: i64) -> Result<Media> {
+    pub async fn media_of(&self, store: &Store, document_id: i64) -> Result<Media> {
         let t = store.track(document_id).await?.ok_or_else(|| anyhow!("unknown track"))?;
         let peer = self.peer_ref(t.chat_id).await?;
         let m = self.client.get_messages_by_id(peer, &[t.message_id]).await?.into_iter().next().flatten().ok_or_else(|| anyhow!("message gone"))?;
         m.media().ok_or_else(|| anyhow!("message has no media"))
+    }
+
+    /// Chunk number `idx` (512 KiB each) of the document; the last one may be shorter.
+    pub async fn chunk(&self, media: &Media, idx: i32) -> Result<Vec<u8>> {
+        let b = self.client.iter_download(media).skip_chunks(idx).next().await?;
+        b.ok_or_else(|| anyhow!("chunk {idx} is past the end"))
     }
 
     pub async fn download(&self, store: &Store, document_id: i64, dir: &Path) -> Result<std::path::PathBuf> {

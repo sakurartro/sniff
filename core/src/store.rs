@@ -28,6 +28,8 @@ impl Store {
              CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(title, performer, content='tracks', content_rowid='document_id');",
         )
         .await?;
+        // migration for DBs created before LRU eviction; fails harmlessly when the column already exists
+        let _ = c.execute("ALTER TABLE tracks ADD COLUMN last_played INTEGER NOT NULL DEFAULT 0", ()).await;
         Ok(Self(c))
     }
 
@@ -76,7 +78,7 @@ impl Store {
         let n = self
             .0
             .execute(
-                "INSERT OR IGNORE INTO tracks VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                "INSERT OR IGNORE INTO tracks(document_id,title,performer,duration,size,chat_id,message_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
                 params![t.document_id, t.title.as_str(), t.performer.as_str(), t.duration, t.size as i64, t.chat_id, t.message_id],
             )
             .await?;
@@ -84,6 +86,22 @@ impl Store {
             self.0.execute("INSERT INTO tracks_fts(rowid,title,performer) VALUES(?1,?2,?3)", params![t.document_id, t.title.as_str(), t.performer.as_str()]).await?;
         }
         Ok(n > 0)
+    }
+
+    /// Marks the track as just used (LRU cache eviction order).
+    pub async fn touch(&self, document_id: i64) -> Result<()> {
+        self.0.execute("UPDATE tracks SET last_played=CAST(strftime('%s','now') AS INTEGER) WHERE document_id=?1", params![document_id]).await?;
+        Ok(())
+    }
+
+    /// document_id -> last_played (unix seconds, 0 = never).
+    pub async fn last_played(&self) -> Result<std::collections::HashMap<i64, i64>> {
+        let mut rows = self.0.query("SELECT document_id,last_played FROM tracks", ()).await?;
+        let mut out = std::collections::HashMap::new();
+        while let Some(r) = rows.next().await? {
+            out.insert(r.get(0)?, r.get(1)?);
+        }
+        Ok(out)
     }
 
     pub async fn track(&self, document_id: i64) -> Result<Option<Track>> {
@@ -140,5 +158,8 @@ mod tests {
         assert!(s.set_selected(1, true).await.unwrap());
         assert!(!s.set_selected(99, true).await.unwrap());
         assert_eq!(s.selected_chats().await.unwrap(), vec![1]);
+        assert_eq!(s.last_played().await.unwrap()[&10], 0);
+        s.touch(10).await.unwrap();
+        assert!(s.last_played().await.unwrap()[&10] > 0);
     }
 }
