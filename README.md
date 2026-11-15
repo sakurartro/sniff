@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.svg" width="128" alt="tgkiku logo"></p>
+
 # tgkiku
 
 Spotify-like player for music that lives in your Telegram chats.
