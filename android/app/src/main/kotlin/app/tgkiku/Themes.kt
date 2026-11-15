@@ -16,6 +16,10 @@ private val accents = mapOf(
     "Purple" to Accents(0xFFD0BCFF, 0xFF381E72, 0xFF6750A4),
     "Green" to Accents(0xFF8FD694, 0xFF00390F, 0xFF2E7D32),
     "Orange" to Accents(0xFFFFB77C, 0xFF4F2500, 0xFFA04A00),
+    "Pink" to Accents(0xFFFFB0CB, 0xFF5E1133, 0xFFB5446E),
+    "Teal" to Accents(0xFF7FD6CC, 0xFF003732, 0xFF00786F),
+    "Yellow" to Accents(0xFFE9C46A, 0xFF402D00, 0xFF8A6500),
+    "Graphite" to Accents(0xFFC4C7CC, 0xFF2E3135, 0xFF565B62),
 )
 
 fun colorSchemeFor(theme: String, dark: Boolean): ColorScheme {
