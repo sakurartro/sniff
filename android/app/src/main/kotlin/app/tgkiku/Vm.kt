@@ -8,6 +8,7 @@ import androidx.compose.runtime.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -44,7 +45,11 @@ class Vm(a: Application) : AndroidViewModel(a) {
 
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
-        override fun onPlaybackStateChanged(state: Int) { if (state == Player.STATE_ENDED) next() }
+        override fun onPlaybackStateChanged(state: Int) {
+            loadingTrack = state == Player.STATE_BUFFERING
+            if (state == Player.STATE_ENDED) next()
+        }
+        override fun onPlayerError(e: PlaybackException) { error = e.cause?.cause?.message ?: e.message }
     }
 
     init {
@@ -55,7 +60,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
         viewModelScope.launch { while (true) { if (playing) pos = player.currentPosition; delay(500) } }
         run {
             val c = openApp(a.filesDir.resolve("tg").path, a.cacheDir.resolve("tracks").path)
-            core = c
+            core = c; Shared.core = c
             Covers.core = c; Covers.tracksDir = a.cacheDir.resolve("tracks")
             authorized = c.isAuthorized()
             ready = true
@@ -142,16 +147,42 @@ class Vm(a: Application) : AndroidViewModel(a) {
         playJob = viewModelScope.launch {
             loadingTrack = true; pos = 0
             try {
-                val t0 = android.os.SystemClock.elapsedRealtime()
-                val path = core!!.download(t.documentId)
-                android.util.Log.d("tgkiku", "download ${t.documentId} size=${t.size} took ${android.os.SystemClock.elapsedRealtime() - t0} ms")
-                val cover = Covers.file(t) // after download, so the embedded tag is available
-                val meta = MediaMetadata.Builder().setTitle(t.title).setArtist(t.performer.ifBlank { null }).setArtworkUri(cover?.let { Uri.fromFile(it) }).build()
-                player.setMediaItem(MediaItem.Builder().setUri(Uri.fromFile(File(path))).setMediaMetadata(meta).build())
+                val c = core!!
+                val cachedPath = c.cachedPath(t.documentId)
+                // not downloaded yet: play straight from the downloader (TgDataSource) while it fills the file
+                val uri = cachedPath?.let { Uri.fromFile(File(it)) } ?: Uri.parse("tgkiku://t/${t.documentId}")
+                if (cachedPath == null) c.streamStart(t.documentId, true)
+                val cover = Covers.cached(t)
+                player.setMediaItem(MediaItem.Builder().setUri(uri).setMediaMetadata(meta(t, cover)).build())
                 player.prepare(); player.play()
                 getApplication<Application>().startService(Intent(getApplication(), PlaybackService::class.java))
-            } catch (e: CancellationException) { throw e } catch (e: Exception) { error = msg(e) } finally { loadingTrack = false }
+                if (cover == null) launch { Covers.file(t)?.let { setCover(t, it) } }
+                if (cachedPath != null) prefetchNext(t) else launch {
+                    // the file is complete: switch to the tag cover and start loading the next track
+                    try {
+                        c.awaitDownload(t.documentId)
+                        Covers.upgrade(t)?.let { setCover(t, it) }
+                        prefetchNext(t)
+                    } catch (e: CancellationException) { throw e } catch (_: Exception) {} // a failed download surfaces through the player
+                }
+            } catch (e: CancellationException) { throw e } catch (e: Exception) { error = msg(e); loadingTrack = false }
         }
+    }
+
+    private fun meta(t: TrackInfo, cover: File?) =
+        MediaMetadata.Builder().setTitle(t.title).setArtist(t.performer.ifBlank { null }).setArtworkUri(cover?.let { Uri.fromFile(it) }).build()
+
+    /** Metadata-only replace: ExoPlayer keeps the position and does not restart the track. */
+    private fun setCover(t: TrackInfo, cover: File) {
+        if (current?.documentId != t.documentId) return
+        val item = player.currentMediaItem ?: return
+        player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setMediaMetadata(meta(t, cover)).build())
+    }
+
+    private suspend fun prefetchNext(t: TrackInfo) {
+        if (current?.documentId != t.documentId) return
+        val n = queue.getOrNull(index + 1) ?: return
+        try { core!!.streamStart(n.documentId, false) } catch (e: CancellationException) { throw e } catch (_: Exception) {}
     }
 
     fun next() { if (index + 1 < queue.size) { index++; load() } }

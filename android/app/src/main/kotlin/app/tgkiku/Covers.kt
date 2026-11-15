@@ -29,6 +29,7 @@ object Covers {
 
     /** Cover file for the track, or null. Safe to call for every visible row. */
     suspend fun file(t: TrackInfo): File? = withContext(Dispatchers.IO) {
+        File(dir(), "${t.documentId}.emb.jpg").takeIf { it.exists() }?.let { return@withContext it }
         val jpg = File(dir(), "${t.documentId}.jpg")
         if (jpg.exists()) return@withContext jpg
         embedded(t, jpg)?.let { return@withContext it }
@@ -41,6 +42,20 @@ object Covers {
             if (!hit) none.createNewFile()
             jpg.takeIf { it.exists() }
         }
+    }
+
+    /** Whatever cover is already on disk, without any lookup. */
+    fun cached(t: TrackInfo): File? = listOf("emb.jpg", "jpg").map { File(dir(), "${t.documentId}.$it") }.firstOrNull { it.exists() }
+
+    /**
+     * For a track that was streamed: once the file is complete, picks up the tag-embedded picture.
+     * It goes to a separate `.emb.jpg` so the artwork URI changes and the notification reloads it.
+     */
+    suspend fun upgrade(t: TrackInfo): File? = withContext(Dispatchers.IO) {
+        val emb = File(dir(), "${t.documentId}.emb.jpg")
+        if (!emb.exists()) embedded(t, emb)
+        mem.remove(t.documentId)
+        emb.takeIf { it.exists() }
     }
 
     suspend fun bitmap(t: TrackInfo): Bitmap? {

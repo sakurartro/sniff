@@ -1,6 +1,6 @@
 //! Kotlin-facing API (UniFFI). Thin wrapper over tgkiku-core; one `App` per process.
 use std::{path::PathBuf, sync::{Arc, Mutex}};
-use tgkiku_core::{keys::ApiKeys, store::{Store, Track}, tg::{LoginToken, PasswordToken, SignIn, Tg}};
+use tgkiku_core::{keys::ApiKeys, store::{Store, Track}, stream::{Mode, Streams}, tg::{LoginToken, PasswordToken, SignIn, Tg}};
 use tokio::sync::Mutex as AsyncMutex;
 
 uniffi::setup_scaffolding!();
@@ -62,7 +62,8 @@ impl From<Track> for TrackInfo {
 #[derive(uniffi::Object)]
 pub struct App {
     tg: Arc<Tg>,
-    store: Store,
+    store: Arc<Store>,
+    streams: Arc<Streams>,
     cache: PathBuf,
     code_token: AsyncMutex<Option<LoginToken>>,
     pw_token: Arc<AsyncMutex<Option<PasswordToken>>>,
@@ -78,9 +79,11 @@ pub async fn open_app(data_dir: String, cache_dir: String) -> R<Arc<App>> {
     std::fs::create_dir_all(&cache).map_err(e)?;
     let keys = ApiKeys::resolve(None).map_err(e)?;
     let tg = Tg::connect(data.join("tg.session"), keys).await.map_err(e)?;
-    let store = Store::open(data.join("library.sqlite")).await.map_err(e)?;
+    let store = Arc::new(Store::open(data.join("library.sqlite")).await.map_err(e)?);
+    let tg = Arc::new(tg);
     Ok(Arc::new(App {
-        tg: Arc::new(tg),
+        streams: Streams::new(tg.clone(), store.clone(), cache.clone()),
+        tg,
         store,
         cache,
         code_token: AsyncMutex::new(None),
@@ -167,10 +170,19 @@ impl App {
         Ok(self.store.tracks(&query).await.map_err(e)?.into_iter().map(Into::into).collect())
     }
 
-    /// Downloads (or reuses cached) audio; returns the local file path.
-    pub async fn download(&self, document_id: i64) -> R<String> {
-        let p = self.tg.download(&self.store, document_id, &self.cache).await.map_err(e)?;
-        Ok(p.to_string_lossy().into_owned())
+    /// Starts downloading the track (`foreground` = it is the one playing, else it is a prefetch) and returns its size in bytes.
+    pub async fn stream_start(&self, document_id: i64, foreground: bool) -> R<u64> {
+        self.streams.size(document_id, if foreground { Mode::Fg } else { Mode::Next }).await.map_err(e)
+    }
+
+    /// Bytes `[offset, offset+len)` of the track, waiting for them to arrive; may be shorter than `len`, empty at the end.
+    pub async fn stream_read(&self, document_id: i64, offset: u64, len: u32) -> R<Vec<u8>> {
+        self.streams.read(document_id, offset, len as usize).await.map_err(e)
+    }
+
+    /// Resolves with the local file path once the track is completely downloaded.
+    pub async fn await_download(&self, document_id: i64) -> R<String> {
+        Ok(self.streams.finished(document_id).await.map_err(e)?.to_string_lossy().into_owned())
     }
 
     /// Telegram's thumbnail for the track, saved as `<cache>/covers/<id>.jpg`; None if it has none.
@@ -184,6 +196,11 @@ impl App {
 
 #[uniffi::export]
 impl App {
+    /// Path of the fully downloaded file, if the track is already in the cache.
+    pub fn cached_path(&self, document_id: i64) -> Option<String> {
+        self.streams.cached(document_id).map(|p| p.to_string_lossy().into_owned())
+    }
+
     pub fn qr_state(&self) -> Login {
         self.qr.lock().unwrap().clone()
     }
