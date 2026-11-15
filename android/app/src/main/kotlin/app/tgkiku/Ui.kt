@@ -52,12 +52,8 @@ import uniffi.tgkiku_ffi.TrackInfo
 val Accent = Color(0xFFFA2D48)
 
 @Composable
-fun AppTheme(content: @Composable () -> Unit) {
-    val scheme = if (isSystemInDarkTheme())
-        darkColorScheme(primary = Accent, background = Color.Black, surface = Color(0xFF1C1C1E), onBackground = Color.White, onSurface = Color.White, onSurfaceVariant = Color(0xFF8E8E93), outlineVariant = Color(0x33FFFFFF))
-    else
-        lightColorScheme(primary = Accent, background = Color.White, surface = Color(0xFFF2F2F7), onBackground = Color.Black, onSurface = Color.Black, onSurfaceVariant = Color(0xFF8E8E93), outlineVariant = Color(0x1F000000))
-    MaterialTheme(colorScheme = scheme, content = content)
+fun TgkikuTheme(theme: AppTheme, content: @Composable () -> Unit) {
+    MaterialTheme(colorScheme = colorSchemeFor(theme.name, isSystemInDarkTheme()), content = content)
 }
 
 @Composable
