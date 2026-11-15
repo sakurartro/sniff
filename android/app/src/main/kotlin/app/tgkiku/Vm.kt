@@ -204,10 +204,16 @@ class Vm(a: Application) : AndroidViewModel(a) {
     fun prev() { if (player.currentPosition > 3000 || index <= 0) { player.seekTo(0); pos = 0 } else { index--; load() } }
     // --- queue editing (only upcoming tracks, i > index, so the current track stays valid) ---
     fun jumpTo(i: Int) { if (i in queue.indices) { index = i; load() } }
-    fun removeAt(i: Int) { if (i > index && i in queue.indices) queue = queue.toMutableList().also { it.removeAt(i) } }
+    fun removeAt(i: Int) {
+        if (i <= index || i !in queue.indices) return
+        val t = queue[i]
+        queue = queue.toMutableList().also { it.removeAt(i) }
+        orig = if (shuffle) orig.toMutableList().also { it.remove(t) } else queue // keep shuffle-off from resurrecting removed tracks
+    }
     fun moveTrack(from: Int, to: Int) {
         if (from <= index || to <= index || from !in queue.indices || to !in queue.indices) return
         queue = queue.toMutableList().also { it.add(to, it.removeAt(from)) }
+        if (!shuffle) orig = queue
     }
     fun toggle() { if (player.isPlaying) player.pause() else player.play() }
     fun seek(ms: Long) { player.seekTo(ms); pos = ms }
