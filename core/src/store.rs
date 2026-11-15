@@ -14,36 +14,6 @@ pub struct Track {
     pub message_id: i32,
 }
 
-/// Listening feedback; the weight is how much it moves the artist's taste score.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Signal {
-    Play,
-    Skip,
-    Like,
-}
-
-impl Signal {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Signal::Play => "play",
-            Signal::Skip => "skip",
-            Signal::Like => "like",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        [Signal::Play, Signal::Skip, Signal::Like].into_iter().find(|k| k.as_str() == s)
-    }
-
-    pub fn weight(self) -> i32 {
-        match self {
-            Signal::Play => 1,
-            Signal::Skip => -2,
-            Signal::Like => 3,
-        }
-    }
-}
-
 pub struct Store(Connection);
 
 const COLS: &str = "document_id,title,performer,duration,size,chat_id,message_id";
@@ -55,8 +25,6 @@ impl Store {
             "CREATE TABLE IF NOT EXISTS chats(id INTEGER PRIMARY KEY, title TEXT NOT NULL, selected INTEGER NOT NULL DEFAULT 0, cursor INTEGER NOT NULL DEFAULT 0);
              -- one row per document_id: forwarded copies in other chats collapse into one track
              CREATE TABLE IF NOT EXISTS tracks(document_id INTEGER PRIMARY KEY, title TEXT NOT NULL, performer TEXT NOT NULL, duration INTEGER NOT NULL, size INTEGER NOT NULL, chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL);
-             CREATE TABLE IF NOT EXISTS plays(document_id INTEGER NOT NULL, ts INTEGER NOT NULL, kind TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS bots(username TEXT PRIMARY KEY);
              CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(title, performer, content='tracks', content_rowid='document_id');",
         )
         .await?;
@@ -124,45 +92,6 @@ impl Store {
     pub async fn touch(&self, document_id: i64) -> Result<()> {
         self.0.execute("UPDATE tracks SET last_played=CAST(strftime('%s','now') AS INTEGER) WHERE document_id=?1", params![document_id]).await?;
         Ok(())
-    }
-
-    /// Returns false if the track is unknown.
-    pub async fn record(&self, document_id: i64, kind: Signal) -> Result<bool> {
-        let n = self
-            .0
-            .execute(
-                "INSERT INTO plays(document_id,ts,kind) SELECT document_id,CAST(strftime('%s','now') AS INTEGER),?2 FROM tracks WHERE document_id=?1",
-                params![document_id, kind.as_str()],
-            )
-            .await?;
-        Ok(n > 0)
-    }
-
-    /// (performer, signal) for every recorded play of a track still in the library.
-    pub async fn plays(&self) -> Result<Vec<(String, Signal)>> {
-        let mut rows = self.0.query("SELECT t.performer,p.kind FROM plays p JOIN tracks t ON t.document_id=p.document_id", ()).await?;
-        let mut out = vec![];
-        while let Some(r) = rows.next().await? {
-            if let Some(k) = Signal::parse(&r.get::<String>(1)?) {
-                out.push((r.get(0)?, k));
-            }
-        }
-        Ok(out)
-    }
-
-    pub async fn add_bot(&self, username: &str) -> Result<()> {
-        self.0.execute("INSERT OR IGNORE INTO bots(username) VALUES(?1)", params![username]).await?;
-        Ok(())
-    }
-
-    /// Bot usernames in the order they were added (= resolver priority).
-    pub async fn bots(&self) -> Result<Vec<String>> {
-        let mut rows = self.0.query("SELECT username FROM bots ORDER BY rowid", ()).await?;
-        let mut out = vec![];
-        while let Some(r) = rows.next().await? {
-            out.push(r.get(0)?);
-        }
-        Ok(out)
     }
 
     /// document_id -> last_played (unix seconds, 0 = never).
@@ -242,11 +171,5 @@ mod tests {
         assert_eq!(s.last_played().await.unwrap()[&10], 0);
         s.touch(10).await.unwrap();
         assert!(s.last_played().await.unwrap()[&10] > 0);
-        assert!(s.record(10, Signal::Like).await.unwrap());
-        assert!(!s.record(99, Signal::Like).await.unwrap());
-        assert_eq!(s.plays().await.unwrap(), vec![("Band".to_string(), Signal::Like)]);
-        s.add_bot("a_bot").await.unwrap();
-        s.add_bot("a_bot").await.unwrap();
-        assert_eq!(s.bots().await.unwrap(), vec!["a_bot"]);
     }
 }
