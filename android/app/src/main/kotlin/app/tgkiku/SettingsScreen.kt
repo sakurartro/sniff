@@ -34,13 +34,13 @@ fun SettingsScreen(selected: AppTheme, onSelect: (AppTheme) -> Unit, mode: Int, 
             }
             SettingsSection("Оформление") {
                 Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("Системный", "Светлый", "Тёмный").forEachIndexed { i, s ->
-                        val on = i == mode
+                    listOf(1 to "Светлый", 2 to "Тёмный").forEach { (m, s) ->
+                        val on = (m == 1) == (mode == 1)
                         Text(
                             s, fontSize = 14.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center,
                             color = if (on) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.background)
-                                .clickable { onMode(i) }.padding(vertical = 10.dp),
+                                .clickable { onMode(m) }.padding(vertical = 10.dp),
                         )
                     }
                 }

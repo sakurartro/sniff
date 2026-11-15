@@ -59,7 +59,7 @@ import uniffi.tgkiku_ffi.TrackInfo
 val Accent = Color(0xFFFF5A7A)
 
 @Composable
-fun isDark(mode: Int) = if (mode == 0) isSystemInDarkTheme() else mode == 2
+fun isDark(mode: Int) = mode != 1 // 1 light, anything else (incl. the old "system" 0) dark
 
 @Composable
 fun TgkikuTheme(theme: AppTheme, mode: Int, content: @Composable () -> Unit) {
