@@ -119,7 +119,7 @@ pub fn button_matches(c: &Cand, caption: &str) -> bool {
     cap.contains(&artists::key(&c.artist)) && cap.contains(&tkey(&c.title))
 }
 
-/// Selected chats usable as source bots, (chat id, kind); chats not checked yet are checked once and remembered.
+/// Selected chats usable as source bots, (chat id, kind), fastest kind first; chats not checked yet are checked once and remembered.
 pub async fn sources(tg: &Tg, store: &Store) -> Result<Vec<(i64, String)>> {
     let mut bots = vec![];
     for (id, kind) in store.selected_bots().await? {
@@ -131,10 +131,18 @@ pub async fn sources(tg: &Tg, store: &Store) -> Result<Vec<(i64, String)>> {
                 k
             }
         };
-        if !kind.is_empty() {
-            bots.push((id, kind));
+        if kind.is_empty() {
+            continue;
         }
+        // once per bot: its chat is noise (and ads), so notifications go off; a manual unmute stays
+        if !store.muted(id).await? {
+            tg.mute_forever(id).await?;
+            store.set_muted(id).await?;
+        }
+        bots.push((id, kind));
     }
+    // inline bots answer in about 1s, deeplink downloaders take ~5s
+    bots.sort_by_key(|(_, k)| k != "inline");
     Ok(bots)
 }
 

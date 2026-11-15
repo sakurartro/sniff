@@ -214,6 +214,10 @@ impl Tg {
         store.upsert_chat(chat_id, p.name().unwrap_or(name)).await?;
         store.set_selected(chat_id, true).await?;
         store.set_bot(chat_id, &kind).await?;
+        if !store.muted(chat_id).await? {
+            self.mute_forever(chat_id).await?;
+            store.set_muted(chat_id).await?;
+        }
         Ok(kind)
     }
 
@@ -249,14 +253,41 @@ impl Tg {
 
     /// Runs `f` with the bot chat muted (unless the user already muted it), then marks the chat read.
     async fn quiet<T>(&self, peer: &grammers_session::types::PeerRef, f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
-        let peer = peer.clone();
-        let np: tl::enums::InputNotifyPeer = tl::types::InputNotifyPeer { peer: (&peer).into() }.into();
-        let tl::enums::PeerNotifySettings::Settings(old) = self.client.invoke(&tl::functions::account::GetNotifySettings { peer: np.clone() }).await?;
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i32;
+        let old = self.notify(peer).await?;
+        let now = unix_now();
         let ours = !old.mute_until.is_some_and(|u| u > now);
-        // the settings object replaces the old one, so carry every field over and change only mute_until
-        let set = |mute_until: i32| tl::functions::account::UpdateNotifySettings {
-            peer: np.clone(),
+        // timed mute: if the app dies mid-search it lifts by itself; 90s covers the longest wait (15+30s, 45s)
+        if ours {
+            self.set_mute(peer, &old, now + 90).await?;
+        }
+        let r = f.await;
+        if ours {
+            let _ = self.set_mute(peer, &old, old.mute_until.unwrap_or(0)).await;
+        }
+        let _ = self.client.invoke(&tl::functions::messages::ReadHistory { peer: peer.into(), max_id: 0 }).await;
+        r
+    }
+
+    /// Turns notifications of a chat off for good, unless they already are off.
+    pub async fn mute_forever(&self, chat_id: i64) -> Result<()> {
+        let peer = self.peer_ref(chat_id).await?;
+        let old = self.notify(&peer).await?;
+        if !old.mute_until.is_some_and(|u| u > unix_now()) {
+            self.set_mute(&peer, &old, i32::MAX).await?;
+        }
+        Ok(())
+    }
+
+    async fn notify(&self, peer: &grammers_session::types::PeerRef) -> Result<tl::types::PeerNotifySettings> {
+        let np = tl::types::InputNotifyPeer { peer: peer.into() }.into();
+        let tl::enums::PeerNotifySettings::Settings(s) = self.client.invoke(&tl::functions::account::GetNotifySettings { peer: np }).await?;
+        Ok(s)
+    }
+
+    /// The settings object replaces the old one, so every field is carried over and only mute_until changes.
+    async fn set_mute(&self, peer: &grammers_session::types::PeerRef, old: &tl::types::PeerNotifySettings, mute_until: i32) -> Result<()> {
+        let req = tl::functions::account::UpdateNotifySettings {
+            peer: tl::types::InputNotifyPeer { peer: peer.into() }.into(),
             settings: tl::types::InputPeerNotifySettings {
                 show_previews: old.show_previews,
                 silent: old.silent,
@@ -268,16 +299,8 @@ impl Tg {
             }
             .into(),
         };
-        // timed mute: if the app dies mid-search it lifts by itself; 90s covers the longest wait (15+30s, 45s)
-        if ours {
-            self.client.invoke(&set(now + 90)).await?;
-        }
-        let r = f.await;
-        if ours {
-            let _ = self.client.invoke(&set(old.mute_until.unwrap_or(0))).await;
-        }
-        let _ = self.client.invoke(&tl::functions::messages::ReadHistory { peer: (&peer).into(), max_id: 0 }).await;
-        r
+        self.client.invoke(&req).await?;
+        Ok(())
     }
 
     /// Songs an inline/deeplink source bot finds for a free-text query, up to `n`, deduplicated.
@@ -473,6 +496,10 @@ impl Tg {
         }
         Err(anyhow!("chat {chat_id} not found in dialogs"))
     }
+}
+
+fn unix_now() -> i32 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i32)
 }
 
 fn track_of(m: &Message, chat_id: i64) -> Option<Track> {

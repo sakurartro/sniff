@@ -36,6 +36,8 @@ impl Store {
         let _ = c.execute("ALTER TABLE tracks ADD COLUMN last_played INTEGER NOT NULL DEFAULT 0", ()).await;
         // source bot kind: NULL = not checked yet, '' = not a usable bot, else inline/deeplink/text
         let _ = c.execute("ALTER TABLE chats ADD COLUMN bot TEXT", ()).await;
+        // 1 = the app already turned this source bot's notifications off once (never again, the user may undo it)
+        let _ = c.execute("ALTER TABLE chats ADD COLUMN muted INTEGER NOT NULL DEFAULT 0", ()).await;
         // 1 = came from recommendations: never used as a seed, so taste does not drift rec -> rec -> rec
         let _ = c.execute("ALTER TABLE tracks ADD COLUMN rec INTEGER NOT NULL DEFAULT 0", ()).await;
         // ❤ = in the library; chat tracks start liked, recommendations do not
@@ -82,6 +84,17 @@ impl Store {
             out.push((r.get(0)?, r.get(1)?));
         }
         Ok(out)
+    }
+
+    /// Has the app muted this bot chat already?
+    pub async fn muted(&self, chat: i64) -> Result<bool> {
+        let mut rows = self.0.query("SELECT muted FROM chats WHERE id=?1", params![chat]).await?;
+        Ok(match rows.next().await? { Some(r) => r.get::<i64>(0)? != 0, None => false })
+    }
+
+    pub async fn set_muted(&self, chat: i64) -> Result<()> {
+        self.0.execute("UPDATE chats SET muted=1 WHERE id=?1", params![chat]).await?;
+        Ok(())
     }
 
     pub async fn set_bot(&self, chat: i64, kind: &str) -> Result<()> {
