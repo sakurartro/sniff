@@ -44,6 +44,9 @@ class Vm(a: Application) : AndroidViewModel(a) {
     var loadingTrack by mutableStateOf(false)
     var pos by mutableLongStateOf(0L)
     val current get() = queue.getOrNull(index)
+    var shuffle by mutableStateOf(false)
+    var repeat by mutableIntStateOf(0) // 0 off, 1 all, 2 one
+    private var orig: List<TrackInfo> = emptyList()
 
     private var qrJob: Job? = null
     private var playJob: Job? = null
@@ -52,7 +55,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
         override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
         override fun onPlaybackStateChanged(state: Int) {
             loadingTrack = state == Player.STATE_BUFFERING
-            if (state == Player.STATE_ENDED) next()
+            if (state == Player.STATE_ENDED) { if (repeat == 2) { player.seekTo(0); player.play() } else next() }
         }
         override fun onPlayerError(e: PlaybackException) { error = e.cause?.cause?.message ?: e.message }
     }
@@ -144,7 +147,14 @@ class Vm(a: Application) : AndroidViewModel(a) {
     }
 
     // --- player ---
-    fun play(list: List<TrackInfo>, i: Int) { queue = list; index = i; load() }
+    fun play(list: List<TrackInfo>, i: Int) { orig = list; queue = if (shuffle) list.take(i + 1) + list.drop(i + 1).shuffled() else list; index = i; load() }
+    fun toggleShuffle() {
+        val c = current
+        shuffle = !shuffle
+        if (shuffle) { orig = queue; queue = queue.take(index + 1) + queue.drop(index + 1).shuffled() }
+        else { queue = orig; index = queue.indexOf(c).coerceAtLeast(0) }
+    }
+    fun cycleRepeat() { repeat = (repeat + 1) % 3 }
 
     private fun load() {
         val t = current ?: return
@@ -190,7 +200,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
         try { core!!.streamStart(n.documentId, false) } catch (e: CancellationException) { throw e } catch (_: Exception) {}
     }
 
-    fun next() { if (index + 1 < queue.size) { index++; load() } }
+    fun next() { if (index + 1 < queue.size) { index++; load() } else if (repeat == 1 && queue.isNotEmpty()) { index = 0; load() } }
     fun prev() { if (player.currentPosition > 3000 || index <= 0) { player.seekTo(0); pos = 0 } else { index--; load() } }
     fun toggle() { if (player.isPlaying) player.pause() else player.play() }
     fun seek(ms: Long) { player.seekTo(ms); pos = ms }

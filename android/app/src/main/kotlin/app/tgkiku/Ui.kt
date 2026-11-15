@@ -32,6 +32,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -297,9 +298,12 @@ fun NowPlaying(vm: Vm, close: () -> Unit) {
         }
         Spacer(Modifier.height(24.dp))
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
+            val on = MaterialTheme.colorScheme.primary; val off = MaterialTheme.colorScheme.onSurfaceVariant
+            Ico("shuffle", 28.dp, if (vm.shuffle) on else off, Modifier.clickable { vm.toggleShuffle() })
             Ico("prev", 44.dp, MaterialTheme.colorScheme.onBackground, Modifier.clickable { vm.prev() })
             Ico(if (vm.playing) "pause" else "play", 64.dp, MaterialTheme.colorScheme.onBackground, Modifier.clickable { vm.toggle() })
             Ico("next", 44.dp, MaterialTheme.colorScheme.onBackground, Modifier.clickable { vm.next() })
+            Ico(if (vm.repeat == 2) "repeat1" else "repeat", 28.dp, if (vm.repeat > 0) on else off, Modifier.clickable { vm.cycleRepeat() })
         }
     }
 }
@@ -327,6 +331,21 @@ fun Ico(kind: String, size: Dp, color: Color, modifier: Modifier = Modifier) {
             "pause" -> {
                 drawRect(color, Offset(0.22f * w, 0.18f * w), Size(0.18f * w, 0.64f * w))
                 drawRect(color, Offset(0.60f * w, 0.18f * w), Size(0.18f * w, 0.64f * w))
+            }
+            "shuffle" -> {
+                val st = Stroke(0.08f * w, cap = StrokeCap.Round)
+                drawPath(Path().apply { moveTo(0.12f * w, 0.28f * w); lineTo(0.35f * w, 0.28f * w); lineTo(0.65f * w, 0.72f * w); lineTo(0.8f * w, 0.72f * w) }, color, style = st)
+                drawPath(Path().apply { moveTo(0.12f * w, 0.72f * w); lineTo(0.35f * w, 0.72f * w); lineTo(0.65f * w, 0.28f * w); lineTo(0.8f * w, 0.28f * w) }, color, style = st)
+                drawPath(Path().apply { moveTo(0.8f * w, 0.16f * w); lineTo(0.92f * w, 0.28f * w); lineTo(0.8f * w, 0.4f * w); close() }, color)
+                drawPath(Path().apply { moveTo(0.8f * w, 0.6f * w); lineTo(0.92f * w, 0.72f * w); lineTo(0.8f * w, 0.84f * w); close() }, color)
+            }
+            "repeat", "repeat1" -> {
+                val st = Stroke(0.08f * w, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                drawPath(Path().apply { moveTo(0.78f * w, 0.36f * w); lineTo(0.78f * w, 0.28f * w); lineTo(0.14f * w, 0.28f * w); lineTo(0.14f * w, 0.5f * w) }, color, style = st)
+                drawPath(Path().apply { moveTo(0.22f * w, 0.64f * w); lineTo(0.22f * w, 0.72f * w); lineTo(0.86f * w, 0.72f * w); lineTo(0.86f * w, 0.5f * w) }, color, style = st)
+                drawPath(Path().apply { moveTo(0.66f * w, 0.14f * w); lineTo(0.82f * w, 0.28f * w); lineTo(0.66f * w, 0.42f * w); close() }, color)
+                drawPath(Path().apply { moveTo(0.34f * w, 0.58f * w); lineTo(0.18f * w, 0.72f * w); lineTo(0.34f * w, 0.86f * w); close() }, color)
+                if (kind == "repeat1") drawPath(Path().apply { moveTo(0.42f * w, 0.44f * w); lineTo(0.5f * w, 0.38f * w); lineTo(0.5f * w, 0.62f * w) }, color, style = Stroke(0.06f * w, cap = StrokeCap.Round, join = StrokeJoin.Round))
             }
             else -> scale(if (kind == "prev") -1f else 1f, 1f, Offset(w / 2, w / 2)) {
                 drawPath(tri(0.1f, 0.72f), color)
