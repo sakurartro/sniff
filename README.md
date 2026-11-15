@@ -12,3 +12,9 @@ Build with your own embedded keys (get them at https://my.telegram.org):
     TGKIKU_API_ID=123 TGKIKU_API_HASH=abc cargo build --release
 
 Or leave them out and pass `TG_API_ID` / `TG_API_HASH` at runtime.
+
+## License
+
+Copyright © 2026 sakurartro.
+
+This project is licensed under the **GNU General Public License v3.0** — see the [LICENSE](LICENSE) file for details.
