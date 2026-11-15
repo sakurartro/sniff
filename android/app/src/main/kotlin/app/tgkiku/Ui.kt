@@ -464,6 +464,7 @@ fun NowPlaying(vm: Vm, close: () -> Unit) {
             Ico(if (vm.playing) "pause" else "play", 64.dp, MaterialTheme.colorScheme.onBackground, Modifier.clickable { vm.toggle() })
             Ico("next", 44.dp, MaterialTheme.colorScheme.onBackground, Modifier.clickable { vm.next() })
             Ico(if (vm.repeat == 2) "repeat1" else "repeat", 28.dp, if (vm.repeat > 0) on else off, Modifier.clickable { vm.cycleRepeat() })
+            Ico("spark", 28.dp, if (vm.recsOn) on else off, Modifier.clickable { vm.toggleRecs() })
         }
         var showQueue by remember { mutableStateOf(false) }
         Spacer(Modifier.weight(1f))
@@ -484,7 +485,7 @@ fun QueueSheet(vm: Vm, dismiss: () -> Unit) {
         LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
             if (cur != null) {
                 item { Text("Сейчас играет", fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp)) }
-                item { QueueRow(cur, Modifier.height(rowH)) }
+                item { QueueRow(cur, Modifier.height(rowH), cur.documentId in vm.recIds) }
             }
             item { Text("Далее", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)) }
             itemsIndexed(vm.queue, key = { i, _ -> keys[i] }) { i, t ->
@@ -494,7 +495,7 @@ fun QueueSheet(vm: Vm, dismiss: () -> Unit) {
                 val box = rememberSwipeToDismissBoxState(confirmValueChange = { if (it != SwipeToDismissBoxValue.Settled) vm.removeAt(idx); true })
                 SwipeToDismissBox(box, modifier = Modifier.height(rowH).offset { androidx.compose.ui.unit.IntOffset(0, dy.toInt()) }.zIndex(if (dy != 0f) 1f else 0f),
                     backgroundContent = { Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer)) }) {
-                    QueueRow(t, Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow).clickable { vm.jumpTo(idx) }) {
+                    QueueRow(t, Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow).clickable { vm.jumpTo(idx) }, t.documentId in vm.recIds) {
                         Text("≡", fontSize = 24.sp, modifier = Modifier.padding(horizontal = 12.dp).pointerInput(Unit) {
                             detectDragGesturesAfterLongPress({}, { dy = 0f }, { dy = 0f }) { ch, d ->
                                 ch.consume(); dy += d.y
@@ -511,11 +512,11 @@ fun QueueSheet(vm: Vm, dismiss: () -> Unit) {
 }
 
 @Composable
-private fun QueueRow(t: TrackInfo, modifier: Modifier, trailing: @Composable () -> Unit = {}) {
+private fun QueueRow(t: TrackInfo, modifier: Modifier, rec: Boolean = false, trailing: @Composable () -> Unit = {}) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Art(t, Modifier.size(44.dp), 6.dp)
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(if (rec) "✨ ${t.title}" else t.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(t.performer.ifBlank { "Неизвестный исполнитель" }, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         trailing()
@@ -566,6 +567,11 @@ fun Ico(kind: String, size: Dp, color: Color, modifier: Modifier = Modifier) {
                 drawPath(Path().apply { moveTo(0.34f * w, 0.58f * w); lineTo(0.18f * w, 0.72f * w); lineTo(0.34f * w, 0.86f * w); close() }, color)
                 if (kind == "repeat1") drawPath(Path().apply { moveTo(0.42f * w, 0.44f * w); lineTo(0.5f * w, 0.38f * w); lineTo(0.5f * w, 0.62f * w) }, color, style = Stroke(0.06f * w, cap = StrokeCap.Round, join = StrokeJoin.Round))
             }
+            "spark" -> drawPath(Path().apply {
+                // four-pointed star: recommendations
+                moveTo(0.5f * w, 0.1f * w); quadraticTo(0.55f * w, 0.45f * w, 0.9f * w, 0.5f * w); quadraticTo(0.55f * w, 0.55f * w, 0.5f * w, 0.9f * w)
+                quadraticTo(0.45f * w, 0.55f * w, 0.1f * w, 0.5f * w); quadraticTo(0.45f * w, 0.45f * w, 0.5f * w, 0.1f * w); close()
+            }, color)
             "queue" -> for (k in 0..2) {
                 val y = (0.25f + 0.25f * k) * w
                 drawRect(color, Offset(0.1f * w, y - 0.04f * w), Size(0.12f * w, 0.08f * w))
