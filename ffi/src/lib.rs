@@ -1,6 +1,6 @@
 //! Kotlin-facing API (UniFFI). Thin wrapper over tgkiku-core; one `App` per process.
-use std::{path::PathBuf, sync::{Arc, Mutex}};
-use tgkiku_core::{keys::ApiKeys, store::{Store, Track}, stream::{Mode, Streams}, tg::{LoginToken, PasswordToken, SignIn, Tg}};
+use std::{collections::HashMap, path::PathBuf, sync::{Arc, Mutex}};
+use tgkiku_core::{artists, keys::ApiKeys, store::{Store, Track}, stream::{Mode, Streams}, tg::{LoginToken, PasswordToken, SignIn, Tg}};
 use tokio::sync::Mutex as AsyncMutex;
 
 uniffi::setup_scaffolding!();
@@ -45,6 +45,8 @@ pub struct TrackInfo {
     pub size: u64,
     pub chat_id: i64,
     pub message_id: i32,
+    /// Individual artists of `performer` (feats split, spelling unified); empty when untagged.
+    pub artists: Vec<String>,
 }
 
 #[derive(uniffi::Record)]
@@ -53,10 +55,9 @@ pub struct SyncStep {
     pub done: bool,
 }
 
-impl From<Track> for TrackInfo {
-    fn from(t: Track) -> Self {
-        Self { document_id: t.document_id, title: t.title, performer: t.performer, duration: t.duration, size: t.size, chat_id: t.chat_id, message_id: t.message_id }
-    }
+fn info(t: Track, names: &HashMap<String, String>) -> TrackInfo {
+    let artists = artists::split(&t.performer).into_iter().map(|a| names.get(&artists::key(&a)).cloned().unwrap_or(a)).collect();
+    TrackInfo { document_id: t.document_id, title: t.title, performer: t.performer, duration: t.duration, size: t.size, chat_id: t.chat_id, message_id: t.message_id, artists }
 }
 
 #[derive(uniffi::Object)]
@@ -167,7 +168,8 @@ impl App {
     }
 
     pub async fn tracks(&self, query: String) -> R<Vec<TrackInfo>> {
-        Ok(self.store.tracks(&query).await.map_err(e)?.into_iter().map(Into::into).collect())
+        let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
+        Ok(self.store.tracks(&query).await.map_err(e)?.into_iter().map(|t| info(t, &names)).collect())
     }
 
     /// Starts downloading the track (`foreground` = it is the one playing, else it is a prefetch) and returns its size in bytes.

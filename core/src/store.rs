@@ -109,6 +109,16 @@ impl Store {
         rows.next().await?.map(|r| row_track(&r)).transpose()
     }
 
+    /// Every track's performer string (for artist spelling statistics).
+    pub async fn performers(&self) -> Result<Vec<String>> {
+        let mut rows = self.0.query("SELECT performer FROM tracks", ()).await?;
+        let mut out = vec![];
+        while let Some(r) = rows.next().await? {
+            out.push(r.get(0)?);
+        }
+        Ok(out)
+    }
+
     /// Empty query lists everything (newest first); otherwise FTS prefix search.
     pub async fn tracks(&self, query: &str) -> Result<Vec<Track>> {
         let q = query.split_whitespace().map(|w| format!("\"{}\"*", w.replace('"', ""))).collect::<Vec<_>>().join(" ");

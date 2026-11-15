@@ -306,8 +306,8 @@ fun Detail(vm: Vm, route: String, push: (String) -> Unit) {
         "playlists" -> TrackList(vm, "Плейлисты", emptyList(), "Плейлисты появятся позже.")
         // shortcut: no album tag in TrackInfo, so everything is one "Неизвестно" group; upgrade when the core exposes tags
         "albums" -> GroupList("Альбомы", listOf(UNKNOWN to vm.tracks.size)) { push("songs") }
-        "artists" -> GroupList("Исполнители", vm.tracks.groupingBy { it.performer.ifBlank { UNKNOWN } }.eachCount().toList().sortedBy { it.first.lowercase() }) { push("artist:$it") }
-        "artist" -> TrackList(vm, arg, vm.tracks.filter { it.performer.ifBlank { UNKNOWN } == arg }, "")
+        "artists" -> GroupList("Исполнители", vm.tracks.flatMap { t -> t.artists.ifEmpty { listOf(UNKNOWN) } }.groupingBy { it }.eachCount().toList().sortedBy { it.first.lowercase() }) { push("artist:$it") }
+        "artist" -> TrackList(vm, arg, vm.tracks.filter { t -> arg in t.artists.ifEmpty { listOf(UNKNOWN) } }, "")
         "chats" -> LazyColumn(Modifier.fillMaxSize()) { item { LargeTitle("Чаты") }; chatTiles(vm.chats.filter { it.selected }, vm.tracks, push) }
         "chat" -> {
             val id = arg.toLongOrNull()
@@ -358,7 +358,7 @@ fun SearchTab(vm: Vm, push: (String) -> Unit) {
     val q = vm.query
     val chats = vm.chats.filter { it.selected }
     val found = chats.filter { it.title.contains(q, true) }
-    val artists = vm.results.map { it.performer }.filter { it.isNotBlank() }.distinct().take(10)
+    val artists = vm.results.flatMap { it.artists }.distinct().take(10)
     val tracks = vm.results.take(30)
     LazyColumn(Modifier.fillMaxSize()) {
         item { LargeTitle("Поиск") }
