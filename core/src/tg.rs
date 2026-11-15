@@ -219,8 +219,42 @@ impl Tg {
 
     /// Get the song from a source bot; the audio lands in the bot chat and is added to the library.
     /// None if the bot has no matching song.
+    /// The bot chat is muted for the search (unless the user already muted it) and marked read after,
+    /// so automatic searches never ping the user.
     pub async fn fetch(&self, store: &Store, chat_id: i64, kind: &str, c: &Cand) -> Result<Option<Track>> {
         let peer = self.peer_ref(chat_id).await?;
+        let np: tl::enums::InputNotifyPeer = tl::types::InputNotifyPeer { peer: (&peer).into() }.into();
+        let tl::enums::PeerNotifySettings::Settings(old) = self.client.invoke(&tl::functions::account::GetNotifySettings { peer: np.clone() }).await?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i32;
+        let ours = !old.mute_until.is_some_and(|u| u > now);
+        // the settings object replaces the old one, so carry every field over and change only mute_until
+        let set = |mute_until: i32| tl::functions::account::UpdateNotifySettings {
+            peer: np.clone(),
+            settings: tl::types::InputPeerNotifySettings {
+                show_previews: old.show_previews,
+                silent: old.silent,
+                mute_until: Some(mute_until),
+                sound: old.android_sound.clone(),
+                stories_muted: old.stories_muted,
+                stories_hide_sender: old.stories_hide_sender,
+                stories_sound: old.stories_android_sound.clone(),
+            }
+            .into(),
+        };
+        // timed mute: if the app dies mid-search it lifts by itself; 90s covers the longest wait (15+30s, 45s)
+        if ours {
+            self.client.invoke(&set(now + 90)).await?;
+        }
+        let r = self.fetch_quiet(store, chat_id, &peer, kind, c).await;
+        if ours {
+            let _ = self.client.invoke(&set(old.mute_until.unwrap_or(0))).await;
+        }
+        let _ = self.client.invoke(&tl::functions::messages::ReadHistory { peer: (&peer).into(), max_id: 0 }).await;
+        r
+    }
+
+    async fn fetch_quiet(&self, store: &Store, chat_id: i64, peer: &grammers_session::types::PeerRef, kind: &str, c: &Cand) -> Result<Option<Track>> {
+        let peer = peer.clone();
         let last = self.client.iter_messages(peer.clone()).limit(1).next().await?.map_or(0, |m| m.id());
         let query = format!("{} {}", c.artist, c.title);
         let t = match kind {
