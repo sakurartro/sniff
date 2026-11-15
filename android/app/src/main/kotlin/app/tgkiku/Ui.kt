@@ -322,7 +322,7 @@ fun QueueSheet(vm: Vm, dismiss: () -> Unit) {
         val rowH = 56.dp
         val rowHPx = with(androidx.compose.ui.platform.LocalDensity.current) { rowH.toPx() }
         // unique keys even when the same track is queued twice
-        val keys = remember(vm.queue) { val seen = HashMap<String, Int>(); vm.queue.map { t -> "${t.documentId}#${seen.merge(t.documentId, 1, Int::plus)}" } }
+        val keys = remember(vm.queue) { val seen = HashMap<Long, Int>(); vm.queue.map { t -> "${t.documentId}#${seen.merge(t.documentId, 1, Int::plus)}" } }
         LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
             if (cur != null) {
                 item { Text("Сейчас играет", fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp)) }
@@ -334,7 +334,7 @@ fun QueueSheet(vm: Vm, dismiss: () -> Unit) {
                 val idx by rememberUpdatedState(i)
                 var dy by remember { mutableFloatStateOf(0f) }
                 val box = rememberSwipeToDismissBoxState(confirmValueChange = { if (it != SwipeToDismissBoxValue.Settled) vm.removeAt(idx); true })
-                SwipeToDismissBox(box, {}, Modifier.height(rowH).offset { androidx.compose.ui.unit.IntOffset(0, dy.toInt()) }.zIndex(if (dy != 0f) 1f else 0f),
+                SwipeToDismissBox(box, modifier = Modifier.height(rowH).offset { androidx.compose.ui.unit.IntOffset(0, dy.toInt()) }.zIndex(if (dy != 0f) 1f else 0f),
                     backgroundContent = { Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer)) }) {
                     QueueRow(t, Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow).clickable { vm.jumpTo(idx) }) {
                         Text("≡", fontSize = 24.sp, modifier = Modifier.padding(horizontal = 12.dp).pointerInput(Unit) {
