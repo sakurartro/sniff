@@ -10,7 +10,7 @@ fn prompt(msg: &str) -> Result<String> {
     Ok(s.trim().to_string())
 }
 
-const HELP: &str = "usage: tgkiku <login | chats | select <chat_id> | unselect <chat_id> | sync [pages] | songs [query] | get <document_id>>\nenv: TGKIKU_DIR (data dir), TG_API_ID + TG_API_HASH (optional own keys)";
+const HELP: &str = "usage: tgkiku <login | chats | select <chat_id> | unselect <chat_id> | sync [pages] | songs [query] | get <document_id> | cover [document_id]>\nenv: TGKIKU_DIR (data dir), TG_API_ID + TG_API_HASH (optional own keys)";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -102,8 +102,23 @@ async fn main() -> Result<()> {
             }
         }
         "get" => {
-            tg.refresh_chats(&store).await?; // PeerRefs are resolved from dialogs
+            eprintln!("downloading...");
             println!("{}", tg.download(&store, args[1].parse()?, &dir.join("cache")).await?.display());
+        }
+        "cover" => {
+            // `cover <id>` fetches one; `cover` alone reports thumb coverage over the first 30 tracks
+            let ids: Vec<i64> = match args.get(1) {
+                Some(id) => vec![id.parse()?],
+                None => store.tracks("").await?.iter().take(30).map(|t| t.document_id).collect(),
+            };
+            let (mut have, dir) = (0, dir.join("covers"));
+            std::fs::create_dir_all(&dir)?;
+            for id in &ids {
+                let c = tg.cover(&store, *id, &dir).await?;
+                have += c.is_some() as usize;
+                println!("{id}: {}", c.map_or("no thumb".into(), |p| p.display().to_string()));
+            }
+            println!("{have}/{} tracks have a thumb", ids.len());
         }
         _ => println!("{HELP}"),
     }

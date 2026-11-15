@@ -1,7 +1,7 @@
 use crate::keys::ApiKeys;
 use crate::store::{Store, Track};
 use anyhow::{anyhow, Result};
-use grammers_client::{media::Media, Client, SignInError};
+use grammers_client::{media::{Media, PhotoSize}, Client, SignInError};
 use grammers_mtsender::SenderPool;
 use grammers_session::{storages::SqliteSession, types::PeerId, Session};
 use grammers_mtsender::SenderPoolFatHandle;
@@ -160,19 +160,48 @@ impl Tg {
         Ok((new, false))
     }
 
-    pub async fn download(&self, store: &Store, document_id: i64, dir: &Path) -> Result<std::path::PathBuf> {
+    async fn media_of(&self, store: &Store, document_id: i64) -> Result<Media> {
         let t = store.track(document_id).await?.ok_or_else(|| anyhow!("unknown track"))?;
+        let peer = self.peer_ref(t.chat_id).await?;
+        let m = self.client.get_messages_by_id(peer, &[t.message_id]).await?.into_iter().next().flatten().ok_or_else(|| anyhow!("message gone"))?;
+        m.media().ok_or_else(|| anyhow!("message has no media"))
+    }
+
+    pub async fn download(&self, store: &Store, document_id: i64, dir: &Path) -> Result<std::path::PathBuf> {
         let path = dir.join(format!("{document_id}.audio"));
         if path.exists() {
             return Ok(path);
         }
-        let peer = self.peer_ref(t.chat_id).await?;
-        let m = self.client.get_messages_by_id(peer, &[t.message_id]).await?.into_iter().next().flatten().ok_or_else(|| anyhow!("message gone"))?;
-        let media = m.media().ok_or_else(|| anyhow!("message has no media"))?;
+        let media = self.media_of(store, document_id).await?;
         let tmp = path.with_extension("part");
         self.client.download_media(&media, &tmp).await?;
         std::fs::rename(&tmp, &path)?;
         Ok(path)
+    }
+
+    /// Telegram's own thumbnail of the audio document (usually the embedded album art), saved as `<id>.jpg`.
+    /// None if the document has no usable thumb.
+    /// shortcut: stripped/path thumbs (tiny blurred previews) are ignored, add a fallback if too many tracks have only those.
+    pub async fn cover(&self, store: &Store, document_id: i64, dir: &Path) -> Result<Option<std::path::PathBuf>> {
+        let path = dir.join(format!("{document_id}.jpg"));
+        if path.exists() {
+            return Ok(Some(path));
+        }
+        let Media::Document(d) = self.media_of(store, document_id).await? else {
+            return Ok(None);
+        };
+        let best = d
+            .thumbs()
+            .into_iter()
+            .filter(|t| matches!(t, PhotoSize::Size(_) | PhotoSize::Cached(_) | PhotoSize::Progressive(_)))
+            .max_by_key(PhotoSize::size);
+        let Some(thumb) = best else {
+            return Ok(None);
+        };
+        let tmp = path.with_extension("part");
+        self.client.download_media(&thumb, &tmp).await?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(Some(path))
     }
 
     async fn peer_ref(&self, chat_id: i64) -> Result<grammers_session::types::PeerRef> {
