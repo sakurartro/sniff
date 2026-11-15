@@ -29,7 +29,7 @@ object Covers {
     lateinit var core: App
     lateinit var tracksDir: File // where `<id>.audio` files and `covers/` live
     private val mem = LruCache<Long, Bitmap>(200)
-    private val gate = Semaphore(5) // shortcut: fixed 5 Telegram lookups at once, lower if it flood-waits
+    private val gate = Semaphore(3) // shortcut: fixed 3 Telegram lookups at once, lower if it flood-waits
     private val itunesGate = Semaphore(2) // separate so slow iTunes lookups don't block Telegram thumbs
     // loads outlive the rows that asked for them, so scrolling away doesn't throw the work out
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
