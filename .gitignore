@@ -1,5 +1,5 @@
 target/
-.tgkiku/
+.sniff/
 *.session
 *.sqlite
 .env

@@ -1,6 +1,6 @@
-<p align="center"><img src="assets/logo.svg" width="128" alt="tgkiku logo"></p>
+<p align="center"><img src="assets/logo.svg" width="128" alt="sniff logo"></p>
 
-# tgkiku
+# sniff
 
 Spotify-like player for music that lives in your Telegram chats.
 
@@ -9,7 +9,7 @@ Spotify-like player for music that lives in your Telegram chats.
 
 Build with your own embedded keys (get them at https://my.telegram.org):
 
-    TGKIKU_API_ID=123 TGKIKU_API_HASH=abc cargo build --release
+    SNIFF_API_ID=123 SNIFF_API_HASH=abc cargo build --release
 
 Or leave them out and pass `TG_API_ID` / `TG_API_HASH` at runtime.
 

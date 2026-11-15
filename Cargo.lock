@@ -1883,6 +1883,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8e2fb0f499abb4d162f2bedad68f5ef91a1682b5a03596ddb67efd37768d100"
 
 [[package]]
+name = "sniff"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "qrcode",
+ "sniff-core",
+ "tokio",
+]
+
+[[package]]
+name = "sniff-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "grammers-client",
+ "grammers-mtsender",
+ "grammers-session",
+ "libsql",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "ureq",
+]
+
+[[package]]
+name = "sniff-ffi"
+version = "0.1.0"
+dependencies = [
+ "sniff-core",
+ "tokio",
+ "uniffi",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1970,42 +2006,6 @@ checksum = "6ecfad6c3abc80a577f2b91c1e412ee57e7a060d430b553c1b0c940974ebcd49"
 dependencies = [
  "smawk",
  "unicode-width",
-]
-
-[[package]]
-name = "tgkiku"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "qrcode",
- "tgkiku-core",
- "tokio",
-]
-
-[[package]]
-name = "tgkiku-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "grammers-client",
- "grammers-mtsender",
- "grammers-session",
- "libsql",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "ureq",
-]
-
-[[package]]
-name = "tgkiku-ffi"
-version = "0.1.0"
-dependencies = [
- "tgkiku-core",
- "tokio",
- "uniffi",
 ]
 
 [[package]]

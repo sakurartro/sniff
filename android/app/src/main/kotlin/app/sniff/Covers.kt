@@ -1,4 +1,4 @@
-package app.tgkiku
+package app.sniff
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -14,8 +14,8 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import uniffi.tgkiku_ffi.App
-import uniffi.tgkiku_ffi.TrackInfo
+import uniffi.sniff_ffi.App
+import uniffi.sniff_ffi.TrackInfo
 import java.io.File
 import java.net.URL
 import java.net.URLEncoder

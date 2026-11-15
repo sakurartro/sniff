@@ -1,4 +1,4 @@
-# tgkiku — архитектура
+# sniff — архитектура
 
 Плеер музыки из Telegram-чатов. Rust-ядро + тонкие оболочки (CLI, Android).
 
@@ -7,7 +7,7 @@
 │ MainActivity → Ui.kt (экраны) → Vm.kt (состояние) │
 │ Covers.kt (обложки)   PlaybackService.kt (Media3) │
 └──────────────┬────────────────────────────────────┘
-               │ UniFFI (JNA, libtgkiku_ffi.so)
+               │ UniFFI (JNA, libsniff_ffi.so)
 ┌──────────────▼──────────┐   ┌──────────────┐
 │ ffi/  App (обёртка)     │   │ cli/  main.rs │
 └──────────────┬──────────┘   └──────┬───────┘
@@ -58,7 +58,7 @@
 - Ui.kt — Compose-экраны (логин, чаты, библиотека, поиск, плеер).
 
 ## Сборка
-GitHub Actions (`.github/workflows/android.yml`): `cargo ndk` → `.so` (arm64-v8a), uniffi → Kotlin, `gradle assembleDebug`, артефакт APK. Ключи — секреты `TGKIKU_API_ID/HASH`.
+GitHub Actions (`.github/workflows/android.yml`): `cargo ndk` → `.so` (arm64-v8a), uniffi → Kotlin, `gradle assembleDebug`, артефакт APK. Ключи — секреты `SNIFF_API_ID/HASH`.
 
 ## Поток воспроизведения сейчас
 ```

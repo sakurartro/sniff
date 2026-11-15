@@ -1,10 +1,10 @@
 [package]
-name = "tgkiku"
+name = "sniff"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
 qrcode = { version = "0.14.1", default-features = false }
-tgkiku-core = { path = "../core" }
+sniff-core = { path = "../core" }
 tokio = { version = "1.54.1", features = ["full"] }

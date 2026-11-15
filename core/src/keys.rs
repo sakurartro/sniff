@@ -8,7 +8,7 @@ pub struct ApiKeys {
 }
 
 fn dec(b: &[u8]) -> String {
-    let pad = b"tgkiku";
+    let pad = b"sniff";
     String::from_utf8(b.iter().enumerate().map(|(i, c)| c ^ pad[i % pad.len()]).collect()).unwrap_or_default()
 }
 
@@ -20,7 +20,7 @@ impl ApiKeys {
 
     pub fn resolve(user: Option<ApiKeys>) -> anyhow::Result<Self> {
         user.or_else(Self::embedded)
-            .ok_or_else(|| anyhow::anyhow!("no api_id/api_hash: build with TGKIKU_API_ID/TGKIKU_API_HASH or pass your own"))
+            .ok_or_else(|| anyhow::anyhow!("no api_id/api_hash: build with SNIFF_API_ID/SNIFF_API_HASH or pass your own"))
     }
 }
 
@@ -33,7 +33,7 @@ pub fn lastfm() -> Option<String> {
 mod tests {
     #[test]
     fn roundtrip() {
-        let pad = b"tgkiku";
+        let pad = b"sniff";
         let enc: Vec<u8> = "abc123".bytes().enumerate().map(|(i, b)| b ^ pad[i % 6]).collect();
         assert_eq!(super::dec(&enc), "abc123");
     }

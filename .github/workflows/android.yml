@@ -13,12 +13,12 @@ jobs:
       - run: cargo install cargo-ndk --locked
       - name: Rust core -> .so
         env:
-          TGKIKU_API_ID: ${{ secrets.TGKIKU_API_ID }}
-          TGKIKU_API_HASH: ${{ secrets.TGKIKU_API_HASH }}
+          SNIFF_API_ID: ${{ secrets.TGKIKU_API_ID }}
+          SNIFF_API_HASH: ${{ secrets.TGKIKU_API_HASH }}
           LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
-        run: cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build --release -p tgkiku-ffi
+        run: cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build --release -p sniff-ffi
       - name: Kotlin bindings
-        run: cargo run -p uniffi-bindgen -- generate --library target/aarch64-linux-android/release/libtgkiku_ffi.so --language kotlin --no-format --out-dir android/app/src/main/java
+        run: cargo run -p uniffi-bindgen -- generate --library target/aarch64-linux-android/release/libsniff_ffi.so --language kotlin --no-format --out-dir android/app/src/main/java
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: 8.10.2 }
       - name: Signing key
@@ -27,4 +27,4 @@ jobs:
         env:
           SIGN_PASSWORD: ${{ secrets.SIGN_PASSWORD }}
       - uses: actions/upload-artifact@v4
-        with: { name: tgkiku-debug, path: android/app/build/outputs/apk/debug/app-debug.apk }
+        with: { name: sniff-debug, path: android/app/build/outputs/apk/debug/app-debug.apk }

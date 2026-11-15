@@ -1,5 +1,5 @@
 [package]
-name = "tgkiku-ffi"
+name = "sniff-ffi"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,6 +7,6 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-tgkiku-core = { path = "../core" }
+sniff-core = { path = "../core" }
 tokio = { version = "1.54.1", features = ["full"] }
 uniffi = { version = "0.29", features = ["tokio"] }

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::io::{self, Write};
-use tgkiku_core::{keys::ApiKeys, store::Store, tg::{SignIn, Tg}};
+use sniff_core::{keys::ApiKeys, store::Store, tg::{SignIn, Tg}};
 
 fn prompt(msg: &str) -> Result<String> {
     print!("{msg}");
@@ -10,7 +10,7 @@ fn prompt(msg: &str) -> Result<String> {
     Ok(s.trim().to_string())
 }
 
-const HELP: &str = "usage: tgkiku <login | chats | select <chat_id> | unselect <chat_id> | sync [pages] | songs [query] | get <document_id> | cover [document_id] | recs <seed document_id...>>\nenv: TGKIKU_DIR (data dir), TG_API_ID + TG_API_HASH (optional own keys), LASTFM_API_KEY";
+const HELP: &str = "usage: sniff <login | chats | select <chat_id> | unselect <chat_id> | sync [pages] | songs [query] | get <document_id> | cover [document_id] | recs <seed document_id...>>\nenv: SNIFF_DIR (data dir), TG_API_ID + TG_API_HASH (optional own keys), LASTFM_API_KEY";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
         println!("{HELP}");
         return Ok(());
     };
-    let dir = std::path::PathBuf::from(std::env::var("TGKIKU_DIR").unwrap_or_else(|_| ".tgkiku".into()));
+    let dir = std::path::PathBuf::from(std::env::var("SNIFF_DIR").unwrap_or_else(|_| ".sniff".into()));
     std::fs::create_dir_all(dir.join("cache"))?;
     let store = Store::open(dir.join("library.db")).await?;
 
@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
             for id in &args[1..] {
                 seeds.push(store.track(id.parse()?).await?.ok_or_else(|| anyhow::anyhow!("unknown track {id}"))?);
             }
-            match tgkiku_core::recs::Recs::default().next(&tg, &store, &seeds).await? {
+            match sniff_core::recs::Recs::default().next(&tg, &store, &seeds).await? {
                 Some(t) => println!("{:>20}  {} — {}  [{}:{}]", t.document_id, t.performer, t.title, fmt_dur(t.duration), t.chat_id),
                 None => println!("nothing found"),
             }

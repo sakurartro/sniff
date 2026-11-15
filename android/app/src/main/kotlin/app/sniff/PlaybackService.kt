@@ -1,4 +1,4 @@
-package app.tgkiku
+package app.sniff
 
 import android.content.Context
 import androidx.media3.common.AudioAttributes
@@ -14,7 +14,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
-import uniffi.tgkiku_ffi.App
+import uniffi.sniff_ffi.App
 
 object Shared {
     private var exo: ExoPlayer? = null
@@ -25,7 +25,7 @@ object Shared {
 
     @OptIn(UnstableApi::class)
     fun player(c: Context): ExoPlayer = exo ?: ExoPlayer.Builder(c.applicationContext)
-        // tgkiku:// goes to TgDataSource, file:// to the default file source; CBR seeking lets MP3 without a seek table be scrubbed
+        // sniff:// goes to TgDataSource, file:// to the default file source; CBR seeking lets MP3 without a seek table be scrubbed
         .setMediaSourceFactory(DefaultMediaSourceFactory(
             DefaultDataSource.Factory(c.applicationContext, DataSource.Factory { TgDataSource() }),
             DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true),

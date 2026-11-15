@@ -1,4 +1,4 @@
-package app.tgkiku
+package app.sniff
 
 import android.app.Application
 import android.content.Intent
@@ -14,7 +14,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import uniffi.tgkiku_ffi.*
+import uniffi.sniff_ffi.*
 import java.io.File
 
 enum class Step { Phone, Code, Password, Qr }
@@ -239,7 +239,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
                 val c = core!!
                 val cachedPath = c.cachedPath(t.documentId)
                 // not downloaded yet: play straight from the downloader (TgDataSource) while it fills the file
-                val uri = cachedPath?.let { Uri.fromFile(File(it)) } ?: Uri.parse("tgkiku://t/${t.documentId}")
+                val uri = cachedPath?.let { Uri.fromFile(File(it)) } ?: Uri.parse("sniff://t/${t.documentId}")
                 if (cachedPath == null) c.streamStart(t.documentId, true)
                 val cover = Covers.cached(t)
                 player.setMediaItem(MediaItem.Builder().setUri(uri).setMediaMetadata(meta(t, cover)).build())

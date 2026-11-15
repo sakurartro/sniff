@@ -62,7 +62,7 @@ pub fn similar(api_key: &str, artist: &str, title: &str, limit: usize) -> Result
 
 fn lastfm(api_key: &str, q: &[(&str, &str)]) -> Result<Value> {
     let mut r = ureq::get("https://ws.audioscrobbler.com/2.0/")
-        .header("User-Agent", "tgkiku/0.1")
+        .header("User-Agent", "sniff/0.1")
         .query_pairs(q.iter().copied().chain([("api_key", api_key), ("format", "json")]))
         .config()
         .http_status_as_error(false)

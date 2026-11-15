@@ -1,6 +1,6 @@
-//! Kotlin-facing API (UniFFI). Thin wrapper over tgkiku-core; one `App` per process.
+//! Kotlin-facing API (UniFFI). Thin wrapper over sniff-core; one `App` per process.
 use std::{collections::HashMap, path::PathBuf, sync::{Arc, Mutex}};
-use tgkiku_core::{artists, keys::ApiKeys, recs::Recs, store::{Store, Track}, stream::{Mode, Streams}, tg::{LoginToken, PasswordToken, SignIn, Tg}};
+use sniff_core::{artists, keys::ApiKeys, recs::Recs, store::{Store, Track}, stream::{Mode, Streams}, tg::{LoginToken, PasswordToken, SignIn, Tg}};
 use tokio::sync::Mutex as AsyncMutex;
 
 uniffi::setup_scaffolding!();
@@ -200,7 +200,7 @@ impl App {
 
     /// Is any selected chat a usable source bot?
     pub async fn has_rec_source(&self) -> R<bool> {
-        Ok(!tgkiku_core::recs::sources(&self.tg, &self.store).await.map_err(e)?.is_empty())
+        Ok(!sniff_core::recs::sources(&self.tg, &self.store).await.map_err(e)?.is_empty())
     }
 
     /// One new song similar to `seeds` (document ids, most recent last), fetched from a selected source bot
@@ -217,7 +217,7 @@ impl App {
 
     /// Up to `n` songs the first inline/deeplink source bot finds for `query`; empty if there is no such bot.
     pub async fn bot_search(&self, query: String, n: u32) -> R<Vec<BotHit>> {
-        let bots = tgkiku_core::recs::sources(&self.tg, &self.store).await.map_err(e)?;
+        let bots = sniff_core::recs::sources(&self.tg, &self.store).await.map_err(e)?;
         let Some((chat, _)) = bots.iter().find(|(_, k)| k != "text") else { return Ok(vec![]) };
         let hits = self.tg.search_bot(*chat, &query, n as usize).await.map_err(e)?;
         Ok(hits.into_iter().map(|c| BotHit { artist: c.artist, title: c.title, duration: c.duration }).collect())
@@ -225,8 +225,8 @@ impl App {
 
     /// Fetches a search hit from the source bots into the db, not liked (❤ adds it to the library). Slow.
     pub async fn bot_get(&self, hit: BotHit) -> R<Option<TrackInfo>> {
-        let c = tgkiku_core::recs::Cand { artist: hit.artist, title: hit.title, duration: hit.duration };
-        for (chat, kind) in tgkiku_core::recs::sources(&self.tg, &self.store).await.map_err(e)? {
+        let c = sniff_core::recs::Cand { artist: hit.artist, title: hit.title, duration: hit.duration };
+        for (chat, kind) in sniff_core::recs::sources(&self.tg, &self.store).await.map_err(e)? {
             if let Ok(Some(t)) = self.tg.fetch(&self.store, chat, &kind, &c).await {
                 self.store.set_liked(t.document_id, false).await.map_err(e)?;
                 let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));

@@ -1,4 +1,4 @@
-package app.tgkiku
+package app.sniff
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -22,7 +22,7 @@ class MainActivity : ComponentActivity() {
                 val bar = if (dark) SystemBarStyle.dark(Color.TRANSPARENT) else SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
                 enableEdgeToEdge(bar, bar)
             }
-            TgkikuTheme(vm.theme, vm.mode) { Root(vm) }
+            SniffTheme(vm.theme, vm.mode) { Root(vm) }
         }
     }
 }

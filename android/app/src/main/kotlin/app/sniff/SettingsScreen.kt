@@ -1,4 +1,4 @@
-package app.tgkiku
+package app.sniff
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable

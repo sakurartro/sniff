@@ -1,4 +1,4 @@
-package app.tgkiku
+package app.sniff
 
 import android.content.Intent
 import android.graphics.Bitmap
@@ -54,9 +54,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
-import uniffi.tgkiku_ffi.BotHit
-import uniffi.tgkiku_ffi.Chat
-import uniffi.tgkiku_ffi.TrackInfo
+import uniffi.sniff_ffi.BotHit
+import uniffi.sniff_ffi.Chat
+import uniffi.sniff_ffi.TrackInfo
 
 val Accent = Color(0xFFFF5A7A)
 
@@ -64,7 +64,7 @@ val Accent = Color(0xFFFF5A7A)
 fun isDark(mode: Int) = mode != 1 // 1 light, anything else (incl. the old "system" 0) dark
 
 @Composable
-fun TgkikuTheme(theme: AppTheme, mode: Int, content: @Composable () -> Unit) {
+fun SniffTheme(theme: AppTheme, mode: Int, content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = colorSchemeFor(theme.name, isDark(mode)), content = content)
 }
 
@@ -102,7 +102,7 @@ fun LoginScreen(vm: Vm) {
     ) {
         Image(painterResource(R.drawable.logo), null, Modifier.size(112.dp).clip(RoundedCornerShape(26.dp)))
         Spacer(Modifier.height(16.dp))
-        Text("tgkiku", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+        Text("sniff", fontSize = 30.sp, fontWeight = FontWeight.Bold)
         Text("Музыка из ваших чатов Telegram", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp)
         Spacer(Modifier.height(28.dp))
         when (vm.step) {

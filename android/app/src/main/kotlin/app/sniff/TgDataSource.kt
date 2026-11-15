@@ -1,4 +1,4 @@
-package app.tgkiku
+package app.sniff
 
 import android.net.Uri
 import androidx.annotation.OptIn
@@ -9,7 +9,7 @@ import androidx.media3.datasource.DataSpec
 import kotlinx.coroutines.runBlocking
 import java.io.IOException
 
-/** Plays `tgkiku://t/<document_id>`: bytes come from the Rust downloader, which waits for chunks still in flight. */
+/** Plays `sniff://t/<document_id>`: bytes come from the Rust downloader, which waits for chunks still in flight. */
 @OptIn(UnstableApi::class)
 class TgDataSource : BaseDataSource(false) {
     private var uri: Uri? = null
