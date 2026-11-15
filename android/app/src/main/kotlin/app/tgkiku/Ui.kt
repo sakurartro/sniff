@@ -293,10 +293,12 @@ fun NowPlaying(vm: Vm, close: () -> Unit) {
 
 // ---------- bits ----------
 
-/** No cover art in the core yet: a gradient derived from the title stands in. */
+/** Cover when one is found, else a gradient derived from the title. */
 @Composable
 fun Art(t: TrackInfo, modifier: Modifier, radius: Dp) {
+    val cover by produceState<Bitmap?>(null, t.documentId) { value = Covers.bitmap(t) }
     val h = ((t.title + t.performer).hashCode().toUInt() % 360u).toFloat()
+    cover?.let { Image(it.asImageBitmap(), null, modifier.clip(RoundedCornerShape(radius)), contentScale = ContentScale.Crop); return }
     Box(modifier.clip(RoundedCornerShape(radius)).background(Brush.linearGradient(listOf(Color.hsv(h, 0.55f, 0.95f), Color.hsv((h + 50) % 360, 0.75f, 0.65f)))), Alignment.Center) {
         Text("♪", color = Color.White.copy(alpha = 0.85f), fontSize = 22.sp)
     }

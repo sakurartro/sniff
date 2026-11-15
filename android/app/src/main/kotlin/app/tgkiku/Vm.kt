@@ -56,6 +56,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
         run {
             val c = openApp(a.filesDir.resolve("tg").path, a.cacheDir.resolve("tracks").path)
             core = c
+            Covers.core = c; Covers.tracksDir = a.cacheDir.resolve("tracks")
             authorized = c.isAuthorized()
             ready = true
             if (authorized) loadAll()
@@ -142,7 +143,8 @@ class Vm(a: Application) : AndroidViewModel(a) {
             loadingTrack = true; pos = 0
             try {
                 val path = core!!.download(t.documentId)
-                val meta = MediaMetadata.Builder().setTitle(t.title).setArtist(t.performer.ifBlank { null }).build()
+                val cover = Covers.file(t) // after download, so the embedded tag is available
+                val meta = MediaMetadata.Builder().setTitle(t.title).setArtist(t.performer.ifBlank { null }).setArtworkUri(cover?.let { Uri.fromFile(it) }).build()
                 player.setMediaItem(MediaItem.Builder().setUri(Uri.fromFile(File(path))).setMediaMetadata(meta).build())
                 player.prepare(); player.play()
                 getApplication<Application>().startService(Intent(getApplication(), PlaybackService::class.java))

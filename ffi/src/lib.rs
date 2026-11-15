@@ -172,6 +172,14 @@ impl App {
         let p = self.tg.download(&self.store, document_id, &self.cache).await.map_err(e)?;
         Ok(p.to_string_lossy().into_owned())
     }
+
+    /// Telegram's thumbnail for the track, saved as `<cache>/covers/<id>.jpg`; None if it has none.
+    pub async fn cover(&self, document_id: i64) -> R<Option<String>> {
+        let dir = self.cache.join("covers");
+        std::fs::create_dir_all(&dir).map_err(e)?;
+        let p = self.tg.cover(&self.store, document_id, &dir).await.map_err(e)?;
+        Ok(p.map(|p| p.to_string_lossy().into_owned()))
+    }
 }
 
 #[uniffi::export]
