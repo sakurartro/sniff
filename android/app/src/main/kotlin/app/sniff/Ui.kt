@@ -182,7 +182,7 @@ fun MainScreen(vm: Vm) {
                 }
             }
             if (vm.current != null) MiniPlayer(vm) { full = true }
-            TabBar(tab) { tab = it; stack = "" }
+            TabBar(tab) { if (it != tab) { vm.query = ""; vm.search("") }; tab = it; stack = "" }
         }
         AnimatedVisibility(full, enter = slideInVertically { it }, exit = slideOutVertically { it }) { NowPlaying(vm) { full = false } }
     }
