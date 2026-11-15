@@ -52,12 +52,8 @@ import uniffi.tgkiku_ffi.TrackInfo
 val Accent = Color(0xFFFA2D48)
 
 @Composable
-fun AppTheme(content: @Composable () -> Unit) {
-    val scheme = if (isSystemInDarkTheme())
-        darkColorScheme(primary = Accent, background = Color.Black, surface = Color(0xFF1C1C1E), onBackground = Color.White, onSurface = Color.White, onSurfaceVariant = Color(0xFF8E8E93), outlineVariant = Color(0x33FFFFFF))
-    else
-        lightColorScheme(primary = Accent, background = Color.White, surface = Color(0xFFF2F2F7), onBackground = Color.Black, onSurface = Color.Black, onSurfaceVariant = Color(0xFF8E8E93), outlineVariant = Color(0x1F000000))
-    MaterialTheme(colorScheme = scheme, content = content)
+fun TgkikuTheme(theme: AppTheme, content: @Composable () -> Unit) {
+    MaterialTheme(colorScheme = colorSchemeFor(theme.name, isSystemInDarkTheme()), content = content)
 }
 
 @Composable
@@ -154,6 +150,7 @@ fun qrBitmap(text: String): ImageBitmap {
 fun MainScreen(vm: Vm) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var full by rememberSaveable { mutableStateOf(false) }
+    var settings by rememberSaveable { mutableStateOf(false) }
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().systemBarsPadding()) {
             Box(Modifier.weight(1f)) {
@@ -166,9 +163,12 @@ fun MainScreen(vm: Vm) {
             if (vm.current != null) MiniPlayer(vm) { full = true }
             TabBar(tab) { tab = it }
         }
+        Text("⚙", fontSize = 24.sp, color = Accent, modifier = Modifier.align(Alignment.TopEnd).systemBarsPadding().padding(top = 16.dp, end = 8.dp).clip(RoundedCornerShape(12.dp)).clickable { settings = true }.padding(horizontal = 12.dp, vertical = 4.dp))
         AnimatedVisibility(full, enter = slideInVertically { it }, exit = slideOutVertically { it }) { NowPlaying(vm) { full = false } }
+        AnimatedVisibility(settings, enter = slideInVertically { it }, exit = slideOutVertically { it }) { SettingsScreen(vm.theme, { vm.setAppTheme(it) }) { settings = false } }
     }
-    BackHandler(full) { full = false }
+    BackHandler(settings) { settings = false }
+    BackHandler(full && !settings) { full = false }
 }
 
 @Composable

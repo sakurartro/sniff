@@ -32,6 +32,11 @@ class Vm(a: Application) : AndroidViewModel(a) {
     var results by mutableStateOf<List<TrackInfo>>(emptyList())
     var syncText by mutableStateOf<String?>(null)
 
+    private val prefs = a.getSharedPreferences("settings", 0)
+    var theme by mutableStateOf(AppTheme.entries.firstOrNull { it.name == prefs.getString("theme", null) } ?: AppTheme.Default)
+        private set
+    fun setAppTheme(t: AppTheme) { theme = t; prefs.edit().putString("theme", t.name).apply() }
+
     private val player = Shared.player(a)
     var queue by mutableStateOf<List<TrackInfo>>(emptyList())
     var index by mutableIntStateOf(-1)

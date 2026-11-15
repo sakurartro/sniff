@@ -11,6 +11,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (android.os.Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 0)
-        setContent { AppTheme { Root(viewModel()) } }
+        setContent {
+            val vm = viewModel<Vm>()
+            TgkikuTheme(vm.theme) { Root(vm) }
+        }
     }
 }
