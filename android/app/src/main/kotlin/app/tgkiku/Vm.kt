@@ -1,13 +1,14 @@
 package app.tgkiku
 
 import android.app.Application
+import android.content.Intent
+import androidx.media3.common.MediaMetadata
 import android.net.Uri
 import androidx.compose.runtime.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -30,7 +31,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
     var results by mutableStateOf<List<TrackInfo>>(emptyList())
     var syncText by mutableStateOf<String?>(null)
 
-    private val player = ExoPlayer.Builder(a).build()
+    private val player = Shared.player(a)
     var queue by mutableStateOf<List<TrackInfo>>(emptyList())
     var index by mutableIntStateOf(-1)
     var playing by mutableStateOf(false)
@@ -41,11 +42,16 @@ class Vm(a: Application) : AndroidViewModel(a) {
     private var qrJob: Job? = null
     private var playJob: Job? = null
 
+    private val listener = object : Player.Listener {
+        override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
+        override fun onPlaybackStateChanged(state: Int) { if (state == Player.STATE_ENDED) next() }
+    }
+
     init {
-        player.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
-            override fun onPlaybackStateChanged(state: Int) { if (state == Player.STATE_ENDED) next() }
-        })
+        Shared.onNext = ::next
+        Shared.onPrev = ::prev
+        player.addListener(listener)
+        playing = player.isPlaying
         viewModelScope.launch { while (true) { if (playing) pos = player.currentPosition; delay(500) } }
         run {
             val c = openApp(a.filesDir.resolve("tg").path, a.cacheDir.resolve("tracks").path)
@@ -136,8 +142,10 @@ class Vm(a: Application) : AndroidViewModel(a) {
             loadingTrack = true; pos = 0
             try {
                 val path = core!!.download(t.documentId)
-                player.setMediaItem(MediaItem.fromUri(Uri.fromFile(File(path))))
+                val meta = MediaMetadata.Builder().setTitle(t.title).setArtist(t.performer.ifBlank { null }).build()
+                player.setMediaItem(MediaItem.Builder().setUri(Uri.fromFile(File(path))).setMediaMetadata(meta).build())
                 player.prepare(); player.play()
+                getApplication<Application>().startService(Intent(getApplication(), PlaybackService::class.java))
             } catch (e: CancellationException) { throw e } catch (e: Exception) { error = msg(e) } finally { loadingTrack = false }
         }
     }
@@ -147,5 +155,8 @@ class Vm(a: Application) : AndroidViewModel(a) {
     fun toggle() { if (player.isPlaying) player.pause() else player.play() }
     fun seek(ms: Long) { player.seekTo(ms); pos = ms }
 
-    override fun onCleared() { player.release() }
+    override fun onCleared() {
+        player.removeListener(listener)
+        Shared.onNext = null; Shared.onPrev = null
+    }
 }
