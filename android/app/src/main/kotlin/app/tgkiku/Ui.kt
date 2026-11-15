@@ -154,6 +154,7 @@ fun qrBitmap(text: String): ImageBitmap {
 fun MainScreen(vm: Vm) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var full by rememberSaveable { mutableStateOf(false) }
+    var settings by rememberSaveable { mutableStateOf(false) }
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().systemBarsPadding()) {
             Box(Modifier.weight(1f)) {
@@ -166,9 +167,12 @@ fun MainScreen(vm: Vm) {
             if (vm.current != null) MiniPlayer(vm) { full = true }
             TabBar(tab) { tab = it }
         }
+        Text("⚙", fontSize = 24.sp, color = Accent, modifier = Modifier.align(Alignment.TopEnd).systemBarsPadding().padding(top = 16.dp, end = 8.dp).clip(RoundedCornerShape(12.dp)).clickable { settings = true }.padding(horizontal = 12.dp, vertical = 4.dp))
         AnimatedVisibility(full, enter = slideInVertically { it }, exit = slideOutVertically { it }) { NowPlaying(vm) { full = false } }
+        AnimatedVisibility(settings, enter = slideInVertically { it }, exit = slideOutVertically { it }) { SettingsScreen(vm.theme, { vm.setAppTheme(it) }) { settings = false } }
     }
-    BackHandler(full) { full = false }
+    BackHandler(settings) { settings = false }
+    BackHandler(full && !settings) { full = false }
 }
 
 @Composable
