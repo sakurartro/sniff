@@ -240,6 +240,13 @@ impl Streams {
                 }
                 Err(e) => {
                     dl.st.lock().unwrap().busy[c] = false;
+                    // FLOOD_WAIT_N: Telegram says exactly how long to wait; that is not a failure (grammers already sleeps itself for short ones)
+                    if let Some(grammers_client::InvocationError::Rpc(r)) = e.downcast_ref::<grammers_client::InvocationError>() {
+                        if r.name == "FLOOD_WAIT" {
+                            tokio::time::sleep(Duration::from_secs(r.value.unwrap_or(5).min(600) as u64 + 1)).await; // shortcut: waits cap at 10 min, then retries as usual
+                            continue;
+                        }
+                    }
                     fails += 1;
                     if fails >= RETRIES {
                         self.fail(&dl, e.to_string());
