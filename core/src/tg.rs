@@ -256,11 +256,12 @@ impl Tg {
     /// Songs an inline/deeplink source bot finds for a free-text query, up to `n`, deduplicated.
     /// Only an inline query: nothing is sent to the bot chat until one is fetched.
     pub async fn search_bot(&self, chat_id: i64, query: &str, n: usize) -> Result<Vec<Cand>> {
-        let mut it = self.client.inline_query(self.peer_ref(chat_id).await?, query);
+        // one page only: every further page is another slow round trip through the bot
+        let req = tl::functions::messages::GetInlineBotResults { bot: self.peer_ref(chat_id).await?.into(), peer: tl::enums::InputPeer::Empty, geo_point: None, query: query.into(), offset: String::new() };
+        let tl::enums::messages::BotResults::Results(page) = self.client.invoke(&req).await?;
         let (mut out, mut seen) = (vec![], std::collections::HashSet::new());
-        for _ in 0..n * 3 {
-            let Some(r) = it.next().await? else { break };
-            let card = Card::of(&r.raw);
+        for r in &page.results {
+            let card = Card::of(r);
             let c = match card.audio {
                 Some((p, t, d)) => Cand { artist: p, title: t, duration: d },
                 None if card.payload.is_some() => Cand { artist: card.artist, title: card.title, duration: 0 },

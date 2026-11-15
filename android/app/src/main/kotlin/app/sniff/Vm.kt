@@ -157,7 +157,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
         botJob?.cancel(); botHits = emptyList(); botSearching = false
         if (q.isBlank() || KNOWN_BOTS.none { it in botSources }) return
         botJob = viewModelScope.launch {
-            delay(700) // typing pause: one inline query per query, not per letter
+            delay(400) // typing pause: one inline query per query, not per letter
             botSearching = true
             botHits = try { core!!.botSearch(q.trim(), 15u) } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
             botSearching = false
