@@ -223,6 +223,33 @@ impl Tg {
     /// so automatic searches never ping the user.
     pub async fn fetch(&self, store: &Store, chat_id: i64, kind: &str, c: &Cand) -> Result<Option<Track>> {
         let peer = self.peer_ref(chat_id).await?;
+        self.quiet(&peer, self.fetch_quiet(store, chat_id, &peer, kind, c)).await
+    }
+
+    /// Get a song picked from `search_bot` results: the stored result is sent as is, no second search.
+    pub async fn fetch_hit(&self, store: &Store, chat_id: i64, h: &Hit) -> Result<Option<Track>> {
+        let peer = self.peer_ref(chat_id).await?;
+        self.quiet(&peer, async {
+            let last = self.client.iter_messages(peer.clone()).limit(1).next().await?.map_or(0, |m| m.id());
+            match &h.payload {
+                Some(p) => self.client.send_message(peer.clone(), format!("/start {p}")).await.map(drop)?,
+                None => {
+                    let random_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos() as i64;
+                    #[rustfmt::skip]
+                    let req = tl::functions::messages::SendInlineBotResult { silent: false, background: false, clear_draft: false, hide_via: false, peer: (&peer).into(), reply_to: None, random_id, query_id: h.query_id, id: h.result_id.clone(), schedule_date: None, send_as: None, quick_reply_shortcut: None, allow_paid_stars: None };
+                    self.client.invoke(&req).await?;
+                }
+            }
+            let Some(t) = self.wait_audio(&peer, chat_id, last, 45, |_| true).await? else { return Ok(None) };
+            store.add_track(&t).await?;
+            Ok(Some(t))
+        })
+        .await
+    }
+
+    /// Runs `f` with the bot chat muted (unless the user already muted it), then marks the chat read.
+    async fn quiet<T>(&self, peer: &grammers_session::types::PeerRef, f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+        let peer = peer.clone();
         let np: tl::enums::InputNotifyPeer = tl::types::InputNotifyPeer { peer: (&peer).into() }.into();
         let tl::enums::PeerNotifySettings::Settings(old) = self.client.invoke(&tl::functions::account::GetNotifySettings { peer: np.clone() }).await?;
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i32;
@@ -245,7 +272,7 @@ impl Tg {
         if ours {
             self.client.invoke(&set(now + 90)).await?;
         }
-        let r = self.fetch_quiet(store, chat_id, &peer, kind, c).await;
+        let r = f.await;
         if ours {
             let _ = self.client.invoke(&set(old.mute_until.unwrap_or(0))).await;
         }
@@ -255,20 +282,25 @@ impl Tg {
 
     /// Songs an inline/deeplink source bot finds for a free-text query, up to `n`, deduplicated.
     /// Only an inline query: nothing is sent to the bot chat until one is fetched.
-    pub async fn search_bot(&self, chat_id: i64, query: &str, n: usize) -> Result<Vec<Cand>> {
+    pub async fn search_bot(&self, chat_id: i64, query: &str, n: usize) -> Result<Vec<Hit>> {
         // one page only: every further page is another slow round trip through the bot
         let req = tl::functions::messages::GetInlineBotResults { bot: self.peer_ref(chat_id).await?.into(), peer: tl::enums::InputPeer::Empty, geo_point: None, query: query.into(), offset: String::new() };
         let tl::enums::messages::BotResults::Results(page) = self.client.invoke(&req).await?;
         let (mut out, mut seen) = (vec![], std::collections::HashSet::new());
-        for r in &page.results {
-            let card = Card::of(r);
+        for r in page.results {
+            let card = Card::of(&r);
+            let result_id = match &r {
+                tl::enums::BotInlineResult::Result(x) => x.id.clone(),
+                tl::enums::BotInlineResult::BotInlineMediaResult(x) => x.id.clone(),
+            };
+            let payload = card.payload.clone();
             let c = match card.audio {
                 Some((p, t, d)) => Cand { artist: p, title: t, duration: d },
                 None if card.payload.is_some() => Cand { artist: card.artist, title: card.title, duration: 0 },
                 None => continue,
             };
             if !c.artist.is_empty() && seen.insert((crate::artists::key(&c.artist), recs::tkey(&c.title))) {
-                out.push(c);
+                out.push(Hit { cand: c, query_id: page.query_id, result_id, payload });
                 if out.len() == n {
                     break;
                 }
@@ -340,8 +372,9 @@ impl Tg {
     /// incoming message and can stop the wait early by returning false.
     async fn wait_audio(&self, peer: &grammers_session::types::PeerRef, chat_id: i64, after: i32, secs: u64, mut keep_waiting: impl FnMut(&Message) -> bool) -> Result<Option<Track>> {
         let mut seen = after;
-        for _ in 0..secs / 3 {
-            tokio::time::sleep(Duration::from_secs(3)).await;
+        // 1s polls: the reply usually lands within a couple of seconds
+        for _ in 0..secs {
+            tokio::time::sleep(Duration::from_secs(1)).await;
             let mut it = self.client.iter_messages(peer.clone()).limit(10);
             let mut fresh = vec![];
             while let Some(m) = it.next().await? {
@@ -457,6 +490,16 @@ fn track_of(m: &Message, chat_id: i64) -> Option<Track> {
         liked: true,
         rec: false,
     })
+}
+
+/// A `search_bot` result: the song plus what is needed to send exactly this result later.
+#[derive(Debug, Clone)]
+pub struct Hit {
+    pub cand: Cand,
+    pub query_id: i64,
+    pub result_id: String,
+    /// `/start` payload of a deeplink card; None = send the inline result itself
+    pub payload: Option<String>,
 }
 
 /// What an inline result offers: its card text, real audio tags if it carries a file, a `/start` payload if it links to one.

@@ -34,7 +34,7 @@ mod tests {
     #[test]
     fn roundtrip() {
         let pad = b"sniff";
-        let enc: Vec<u8> = "abc123".bytes().enumerate().map(|(i, b)| b ^ pad[i % 6]).collect();
+        let enc: Vec<u8> = "abc123".bytes().enumerate().map(|(i, b)| b ^ pad[i % pad.len()]).collect();
         assert_eq!(super::dec(&enc), "abc123");
     }
 }

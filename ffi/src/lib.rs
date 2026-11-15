@@ -1,6 +1,6 @@
 //! Kotlin-facing API (UniFFI). Thin wrapper over sniff-core; one `App` per process.
 use std::{collections::HashMap, path::PathBuf, sync::{Arc, Mutex}};
-use sniff_core::{artists, keys::ApiKeys, recs::Recs, store::{Store, Track}, stream::{Mode, Streams}, tg::{LoginToken, PasswordToken, SignIn, Tg}};
+use sniff_core::{artists, keys::ApiKeys, recs::{Cand, Recs}, store::{Store, Track}, stream::{Mode, Streams}, tg::{Hit, LoginToken, PasswordToken, SignIn, Tg}};
 use tokio::sync::Mutex as AsyncMutex;
 
 uniffi::setup_scaffolding!();
@@ -60,6 +60,12 @@ pub struct BotHit {
     pub title: String,
     /// seconds, 0 = unknown
     pub duration: u32,
+    /// bot chat and the exact inline result, so a tap sends it without searching again
+    pub chat_id: i64,
+    pub query_id: i64,
+    pub result_id: String,
+    /// deeplink `/start` payload, "" = none
+    pub payload: String,
 }
 
 #[derive(uniffi::Record)]
@@ -220,20 +226,30 @@ impl App {
         let bots = sniff_core::recs::sources(&self.tg, &self.store).await.map_err(e)?;
         let Some((chat, _)) = bots.iter().find(|(_, k)| k != "text") else { return Ok(vec![]) };
         let hits = self.tg.search_bot(*chat, &query, n as usize).await.map_err(e)?;
-        Ok(hits.into_iter().map(|c| BotHit { artist: c.artist, title: c.title, duration: c.duration }).collect())
+        Ok(hits
+            .into_iter()
+            .map(|h| BotHit { artist: h.cand.artist, title: h.cand.title, duration: h.cand.duration, chat_id: *chat, query_id: h.query_id, result_id: h.result_id, payload: h.payload.unwrap_or_default() })
+            .collect())
     }
 
     /// Fetches a search hit from the source bots into the db, not liked (❤ adds it to the library). Slow.
     pub async fn bot_get(&self, hit: BotHit) -> R<Option<TrackInfo>> {
-        let c = sniff_core::recs::Cand { artist: hit.artist, title: hit.title, duration: hit.duration };
-        for (chat, kind) in sniff_core::recs::sources(&self.tg, &self.store).await.map_err(e)? {
-            if let Ok(Some(t)) = self.tg.fetch(&self.store, chat, &kind, &c).await {
-                self.store.set_liked(t.document_id, false).await.map_err(e)?;
-                let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
-                return Ok(Some(info(Track { liked: false, ..t }, &names)));
+        let c = Cand { artist: hit.artist, title: hit.title, duration: hit.duration };
+        let h = Hit { cand: c.clone(), query_id: hit.query_id, result_id: hit.result_id, payload: Some(hit.payload).filter(|p| !p.is_empty()) };
+        // the stored result first (no second search); if it expired or failed, search again in every source
+        let mut got = self.tg.fetch_hit(&self.store, hit.chat_id, &h).await.ok().flatten();
+        if got.is_none() {
+            for (chat, kind) in sniff_core::recs::sources(&self.tg, &self.store).await.map_err(e)? {
+                got = self.tg.fetch(&self.store, chat, &kind, &c).await.ok().flatten();
+                if got.is_some() {
+                    break;
+                }
             }
         }
-        Ok(None)
+        let Some(t) = got else { return Ok(None) };
+        self.store.set_liked(t.document_id, false).await.map_err(e)?;
+        let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
+        Ok(Some(info(Track { liked: false, ..t }, &names)))
     }
 
     /// Starts downloading the track (`foreground` = it is the one playing, else it is a prefetch) and returns its size in bytes.
