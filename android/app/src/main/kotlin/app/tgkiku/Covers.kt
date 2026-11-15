@@ -4,7 +4,12 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.util.LruCache
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -14,6 +19,7 @@ import uniffi.tgkiku_ffi.TrackInfo
 import java.io.File
 import java.net.URL
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Cover lookup, cheapest first: tag embedded in the downloaded file, Telegram's thumbnail, iTunes search.
@@ -23,12 +29,24 @@ object Covers {
     lateinit var core: App
     lateinit var tracksDir: File // where `<id>.audio` files and `covers/` live
     private val mem = LruCache<Long, Bitmap>(200)
-    private val gate = Semaphore(2) // shortcut: fixed 2 lookups at once, tune if Telegram flood-waits
+    private val gate = Semaphore(5) // shortcut: fixed 5 Telegram lookups at once, lower if it flood-waits
+    private val itunesGate = Semaphore(2) // separate so slow iTunes lookups don't block Telegram thumbs
+    // loads outlive the rows that asked for them, so scrolling away doesn't throw the work out
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val inflight = ConcurrentHashMap<Long, Deferred<File?>>()
 
     private fun dir() = File(tracksDir, "covers").apply { mkdirs() }
 
     /** Cover file for the track, or null. Safe to call for every visible row. */
-    suspend fun file(t: TrackInfo): File? = withContext(Dispatchers.IO) {
+    suspend fun file(t: TrackInfo): File? {
+        val mine = CompletableDeferred<File?>()
+        val d = inflight.putIfAbsent(t.documentId, mine) ?: mine.also { m ->
+            scope.launch { try { m.complete(load(t)) } catch (e: Throwable) { m.complete(null) } finally { inflight.remove(t.documentId) } }
+        }
+        return d.await()
+    }
+
+    private suspend fun load(t: TrackInfo): File? = withContext(Dispatchers.IO) {
         File(dir(), "${t.documentId}.emb.jpg").takeIf { it.exists() }?.let { return@withContext it }
         val jpg = File(dir(), "${t.documentId}.jpg")
         if (jpg.exists()) return@withContext jpg
@@ -38,7 +56,7 @@ object Covers {
         gate.withPermit {
             runCatching { core.cover(t.documentId) }.getOrNull()?.let { return@withPermit File(it) }
             // null = network error, so no `.none`: retry next time
-            val hit = runCatching { itunes(t, jpg) }.getOrNull() ?: return@withPermit null
+            val hit = itunesGate.withPermit { runCatching { itunes(t, jpg) }.getOrNull() } ?: return@withPermit null
             if (!hit) none.createNewFile()
             jpg.takeIf { it.exists() }
         }

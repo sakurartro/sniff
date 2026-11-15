@@ -15,6 +15,10 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -184,7 +188,14 @@ fun LargeTitle(s: String) = Text(s, fontSize = 34.sp, fontWeight = FontWeight.Bo
 
 @Composable
 fun TrackList(vm: Vm, title: String, list: List<TrackInfo>, empty: String, header: @Composable () -> Unit = {}) {
-    LazyColumn(Modifier.fillMaxSize()) {
+    val state = rememberLazyListState()
+    // warm covers for the rows just below the viewport so they are ready when scrolled to
+    LaunchedEffect(list, state) {
+        snapshotFlow { state.firstVisibleItemIndex }.collectLatest { first ->
+            coroutineScope { for (t in list.drop((first - 2).coerceAtLeast(0)).take(25)) launch { Covers.file(t) } }
+        }
+    }
+    LazyColumn(Modifier.fillMaxSize(), state) {
         item { LargeTitle(title) }
         item { header() }
         if (list.isEmpty()) item { Text(empty, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(20.dp)) }
