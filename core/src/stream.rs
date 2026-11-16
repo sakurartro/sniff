@@ -372,6 +372,22 @@ impl Streams {
         self.evict().await
     }
 
+    /// Deletes every downloaded and partial track except the ones playing or downloading; returns bytes left.
+    pub async fn clear(&self) -> u64 {
+        let keep: HashSet<i64> = {
+            let m = self.m.lock().unwrap();
+            m.active.keys().copied().chain(m.fg).collect()
+        };
+        for e in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            let id = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.split_once('.')).filter(|(_, ext)| matches!(*ext, "audio" | "part" | "map")).and_then(|(id, _)| id.parse::<i64>().ok());
+            if id.is_some_and(|id| !keep.contains(&id)) {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+        self.evict().await
+    }
+
     /// Deletes least recently played `.audio` files until the cache fits the limit; active tracks are kept.
     /// Returns the size left.
     /// shortcut: abandoned `.part`/`.map` files are not counted or evicted, add it if they pile up.

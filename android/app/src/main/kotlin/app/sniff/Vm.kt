@@ -57,6 +57,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
         cacheGb = gb; prefs.edit().putFloat("cacheGb", gb).apply()
         viewModelScope.launch { cacheUsed = core!!.setCacheLimit((gb * (1 shl 30)).toLong().toULong()).toLong() }
     }
+    fun clearCache() { viewModelScope.launch { cacheUsed = core!!.clearCache().toLong() } }
 
     var query by mutableStateOf("")
     var recent by mutableStateOf(prefs.getString("recent", "")!!.split(',').mapNotNull { it.toLongOrNull() })

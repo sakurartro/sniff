@@ -333,6 +333,11 @@ impl App {
         self.streams.set_limit(bytes).await
     }
 
+    /// Deletes cached audio (except what is playing or downloading); returns bytes still in use.
+    pub async fn clear_cache(&self) -> u64 {
+        self.streams.clear().await
+    }
+
     /// Telegram's thumbnail for the track, saved as `<cache>/covers/<id>.jpg`; None if it has none.
     pub async fn cover(&self, document_id: i64) -> R<Option<String>> {
         let dir = self.cache.join("covers");

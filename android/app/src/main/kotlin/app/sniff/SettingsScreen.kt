@@ -8,6 +8,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -133,6 +134,19 @@ private fun CacheSection(vm: Vm) {
         Text(
             "Занято ${"%.2f".format(vm.cacheUsed / (1 shl 30).toFloat())} из ${gb(vm.cacheGb)} ГБ. Когда места не хватает, удаляются давно не слушанные треки.",
             fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+        )
+        HorizontalDivider(Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+        var ask by remember { mutableStateOf(false) }
+        Text(
+            "Очистить кэш", fontSize = 16.sp, color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.fillMaxWidth().clickable { ask = true }.padding(horizontal = 16.dp, vertical = 14.dp),
+        )
+        if (ask) AlertDialog(
+            onDismissRequest = { ask = false },
+            title = { Text("Очистить кэш?") },
+            text = { Text("Скачанные треки удалятся с телефона и будут заново загружены из Telegram при воспроизведении.") },
+            confirmButton = { TextButton({ ask = false; vm.clearCache() }) { Text("Очистить", color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton({ ask = false }) { Text("Отмена") } },
         )
     }
 }
