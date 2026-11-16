@@ -175,7 +175,7 @@ fun MainScreen(vm: Vm) {
             Box(Modifier.weight(1f)) {
                 when {
                     tab == 3 -> if (route == "manage") Sub(pop) { ChatsTab(vm) } else SettingsScreen(vm, vm.theme, { vm.setAppTheme(it) }, vm.mode, { vm.setThemeMode(it) }) { push("manage") }
-                    route.isNotEmpty() -> Sub(pop) { Detail(vm, route, push) }
+                    route.isNotEmpty() -> Sub(pop) { Detail(vm, route, push, pop) }
                     tab == 0 -> HomeTab(vm, push)
                     tab == 1 -> SearchTab(vm, push)
                     else -> LibraryTab(vm, push)
@@ -184,7 +184,7 @@ fun MainScreen(vm: Vm) {
             if (vm.current != null) MiniPlayer(vm) { full = true }
             TabBar(tab) { if (it != tab) { vm.query = ""; vm.search("") }; tab = it; stack = "" }
         }
-        AnimatedVisibility(full, enter = slideInVertically { it }, exit = slideOutVertically { it }) { NowPlaying(vm) { full = false } }
+        AnimatedVisibility(full, enter = slideInVertically { it }, exit = slideOutVertically { it }) { NowPlaying(vm, { full = false }) { r -> full = false; tab = 2; stack = r } }
     }
     BackHandler(full) { full = false }
     BackHandler(!full && stack.isNotEmpty()) { pop() }
@@ -271,6 +271,12 @@ fun HomeTab(vm: Vm, push: (String) -> Unit) {
                 }
             }
         }
+        item { Section("Плейлисты") }
+        item {
+            LazyRow(contentPadding = PaddingValues(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(vm.playlists, key = { it.id }) { p -> PlaylistTile(vm, p, Modifier.width(150.dp)) { push("playlist:${p.id}") } }
+            }
+        }
         item { Section("Из чатов") }
         if (chats.isEmpty()) item { Text(EMPTY, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(18.dp)) }
         chatTiles(chats, vm.tracks, push)
@@ -304,11 +310,12 @@ fun LibraryTab(vm: Vm, push: (String) -> Unit) {
 }
 
 @Composable
-fun Detail(vm: Vm, route: String, push: (String) -> Unit) {
+fun Detail(vm: Vm, route: String, push: (String) -> Unit, pop: () -> Unit) {
     val arg = route.substringAfter(':', "")
     when (route.substringBefore(':')) {
         "songs" -> TrackList(vm, "Песни", vm.tracks, EMPTY)
-        "playlists" -> TrackList(vm, "Плейлисты", emptyList(), "Плейлисты появятся позже.")
+        "playlists" -> PlaylistsScreen(vm, push)
+        "playlist" -> arg.toLongOrNull()?.let { PlaylistScreen(vm, it, pop) }
         // shortcut: no album tag in TrackInfo, so everything is one "Неизвестно" group; upgrade when the core exposes tags
         "albums" -> GroupList("Альбомы", listOf(UNKNOWN to vm.tracks.size)) { push("songs") }
         "artists" -> GroupList("Исполнители", vm.tracks.flatMap { t -> t.artists.ifEmpty { listOf(UNKNOWN) } }.groupingBy { it }.eachCount().toList().sortedBy { it.first.lowercase() }) { push("artist:$it") }
@@ -348,8 +355,8 @@ fun TrackList(vm: Vm, title: String, list: List<TrackInfo>, empty: String, heade
 
 @Composable
 fun TrackRow(t: TrackInfo, active: Boolean, onClick: () -> Unit) {
-    // not in the library (unliked): still findable by search, shown dimmed
-    Row(Modifier.fillMaxWidth().alpha(if (t.liked) 1f else 0.5f).clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+    // ✕ «Не нравится»: still findable and kept in playlists, shown dimmed
+    Row(Modifier.fillMaxWidth().alpha(if (t.disliked) 0.5f else 1f).clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Art(t, Modifier.size(48.dp), 12.dp)
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             Text(t.title, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground)
@@ -466,11 +473,15 @@ fun MiniPlayer(vm: Vm, open: () -> Unit) {
 }
 
 @Composable
-fun NowPlaying(vm: Vm, close: () -> Unit) {
+fun NowPlaying(vm: Vm, close: () -> Unit, goto: (String) -> Unit) {
     val t = vm.current ?: return
     val dur = (t.duration.toLong() * 1000).coerceAtLeast(1)
+    var menu by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).pointerInput(Unit) { detectTapGestures() }.systemBarsPadding().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.padding(bottom = 24.dp).size(width = 40.dp, height = 5.dp).clip(RoundedCornerShape(3.dp)).background(MaterialTheme.colorScheme.outlineVariant).clickable(onClick = close))
+        Box(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+            Box(Modifier.align(Alignment.Center).size(width = 40.dp, height = 5.dp).clip(RoundedCornerShape(3.dp)).background(MaterialTheme.colorScheme.outlineVariant).clickable(onClick = close))
+            Ico("more", 30.dp, MaterialTheme.colorScheme.onBackground, Modifier.align(Alignment.CenterEnd).clickable { menu = true })
+        }
         Art(t, Modifier.fillMaxWidth().aspectRatio(1f), 14.dp)
         Spacer(Modifier.height(28.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -505,13 +516,14 @@ fun NowPlaying(vm: Vm, close: () -> Unit) {
         Spacer(Modifier.weight(1f))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             vm.undo?.let { u ->
-                Text("«${u.title}» убрано из медиатеки", Modifier.weight(1f, fill = false), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("«${u.title}»: не нравится", Modifier.weight(1f, fill = false), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 TextButton({ vm.restore() }) { Text("Вернуть") }
             }
             Spacer(Modifier.weight(1f))
             Ico("queue", 28.dp, MaterialTheme.colorScheme.onBackground, Modifier.clickable { showQueue = true })
         }
         if (showQueue) QueueSheet(vm) { showQueue = false }
+        if (menu) TrackMenu(vm, t, { menu = false }, goto)
     }
 }
 
@@ -527,7 +539,7 @@ fun QueueSheet(vm: Vm, dismiss: () -> Unit) {
         LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
             if (cur != null) {
                 item { Text("Сейчас играет", fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp)) }
-                item { QueueRow(cur, Modifier.height(rowH), cur.rec && !cur.liked) }
+                item { QueueRow(cur, Modifier.height(rowH), cur.rec) }
             }
             item { Text("Далее", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)) }
             itemsIndexed(vm.queue, key = { i, _ -> keys[i] }) { i, t ->
@@ -537,20 +549,26 @@ fun QueueSheet(vm: Vm, dismiss: () -> Unit) {
                 val box = rememberSwipeToDismissBoxState(confirmValueChange = { if (it != SwipeToDismissBoxValue.Settled) vm.removeAt(idx); true })
                 SwipeToDismissBox(box, modifier = Modifier.height(rowH).offset { androidx.compose.ui.unit.IntOffset(0, dy.toInt()) }.zIndex(if (dy != 0f) 1f else 0f),
                     backgroundContent = { Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer)) }) {
-                    QueueRow(t, Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow).clickable { vm.jumpTo(idx) }, t.rec && !t.liked) {
-                        Text("≡", fontSize = 24.sp, modifier = Modifier.padding(horizontal = 12.dp).pointerInput(Unit) {
-                            detectDragGesturesAfterLongPress({}, { dy = 0f }, { dy = 0f }) { ch, d ->
-                                ch.consume(); dy += d.y
-                                // swap with the neighbour once dragged past half a row
-                                val to = if (dy > rowHPx / 2) idx + 1 else if (dy < -rowHPx / 2) idx - 1 else idx
-                                if (to != idx && to > vm.index && to < vm.queue.size) { vm.moveTrack(idx, to); dy -= (to - idx) * rowHPx }
-                            }
-                        })
+                    QueueRow(t, Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow).clickable { vm.jumpTo(idx) }, t.rec) {
+                        DragHandle({ idx }, rowHPx, { dy }, { dy = it }) { f, to -> (to > vm.index && to < vm.queue.size).also { if (it) vm.moveTrack(f, to) } }
                     }
                 }
             }
         }
     }
+}
+
+/** ≡: long-press drag; the row swaps with its neighbour once dragged past half a row (`move` says if it may). */
+@Composable
+fun DragHandle(idx: () -> Int, rowHPx: Float, dy: () -> Float, setDy: (Float) -> Unit, move: (Int, Int) -> Boolean) {
+    Text("≡", fontSize = 24.sp, modifier = Modifier.padding(horizontal = 12.dp).pointerInput(Unit) {
+        detectDragGesturesAfterLongPress({}, { setDy(0f) }, { setDy(0f) }) { ch, d ->
+            ch.consume(); setDy(dy() + d.y)
+            val i = idx()
+            val to = if (dy() > rowHPx / 2) i + 1 else if (dy() < -rowHPx / 2) i - 1 else i
+            if (to != i && move(i, to)) setDy(dy() - (to - i) * rowHPx)
+        }
+    })
 }
 
 @Composable
@@ -618,6 +636,7 @@ fun Ico(kind: String, size: Dp, color: Color, modifier: Modifier = Modifier) {
                 }
                 if (kind == "heart") drawPath(p, color) else drawPath(p, color, style = Stroke(0.07f * w, join = StrokeJoin.Round))
             }
+            "more" -> for (k in 0..2) drawCircle(color, 0.07f * w, Offset((0.25f + 0.25f * k) * w, 0.5f * w))
             "x" -> {
                 drawLine(color, Offset(0.25f * w, 0.25f * w), Offset(0.75f * w, 0.75f * w), 0.07f * w, StrokeCap.Round)
                 drawLine(color, Offset(0.75f * w, 0.25f * w), Offset(0.25f * w, 0.75f * w), 0.07f * w, StrokeCap.Round)

@@ -11,6 +11,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -18,6 +20,9 @@ import uniffi.sniff_ffi.*
 import java.io.File
 
 enum class Step { Phone, Code, Password, Qr }
+
+/** Built-in «Мне нравится» playlist (❤), same id as in the core. */
+const val LIKED = 1L
 
 class Vm(a: Application) : AndroidViewModel(a) {
     private var core: App? = null
@@ -29,6 +34,10 @@ class Vm(a: Application) : AndroidViewModel(a) {
     var qrLink by mutableStateOf<String?>(null)
     var chats by mutableStateOf<List<Chat>>(emptyList())
     var tracks by mutableStateOf<List<TrackInfo>>(emptyList())
+    var playlists by mutableStateOf<List<PlaylistInfo>>(emptyList())
+    /** Bumped on every playlist change, so screens showing playlist tracks reload. */
+    var plVersion by mutableIntStateOf(0)
+        private set
     var results by mutableStateOf<List<TrackInfo>>(emptyList())
     var syncText by mutableStateOf<String?>(null)
 
@@ -126,8 +135,10 @@ class Vm(a: Application) : AndroidViewModel(a) {
         val c = core!!
         if (c.chats().isEmpty()) c.refreshChats()
         chats = c.chats()
-        tracks = c.tracks("")
+        reloadLib()
     }
+
+    private suspend fun reloadLib() { tracks = core!!.tracks(""); playlists = core!!.playlists(); plVersion++ }
 
     // --- library ---
     fun refreshChats() { run { core!!.refreshChats(); chats = core!!.chats() } }
@@ -184,11 +195,16 @@ class Vm(a: Application) : AndroidViewModel(a) {
     }
 
     // --- player ---
-    fun play(list: List<TrackInfo>, i: Int) { orig = list; queue = if (shuffle) list.take(i + 1) + list.drop(i + 1).shuffled() else list; index = i; load() }
+    fun play(list: List<TrackInfo>, i: Int) { orig = list; queue = if (shuffle) list.take(i + 1) + list.drop(i + 1).filter { !it.disliked }.shuffled() else list; index = i; load() }
+    /** 🔀 button of a list: shuffle on, random start, ✕ tracks left out. */
+    fun playShuffled(list: List<TrackInfo>) {
+        val l = list.filter { !it.disliked }.ifEmpty { return }
+        shuffle = true; orig = l; queue = l.shuffled(); index = 0; load()
+    }
     fun toggleShuffle() {
         val c = current
         shuffle = !shuffle
-        if (shuffle) { orig = queue; queue = queue.take(index + 1) + queue.drop(index + 1).shuffled() }
+        if (shuffle) { orig = queue; queue = queue.take(index + 1) + queue.drop(index + 1).filter { !it.disliked }.shuffled() }
         else { queue = orig; index = queue.indexOf(c).coerceAtLeast(0) }
     }
     fun cycleRepeat() { repeat = (repeat + 1) % 3 }
@@ -216,7 +232,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
      *  while earlier tracks play; if it is late it simply lands later. */
     private fun prepareRec() {
         if (!recsOn || recJob?.isActive == true || queue.drop(index + 1).any { it.rec }) return
-        val seeds = queue.take(index + 1).takeLast(10).map { it.documentId } // core keeps the last 3 liked
+        val seeds = queue.take(index + 1).takeLast(10).map { it.documentId } // core keeps the last 3 own (non-rec, non-✕) ones
         if (seeds.isEmpty()) return
         recJob = viewModelScope.launch {
             val r = try { core!!.recommend(seeds) } catch (e: CancellationException) { throw e } catch (_: Exception) { null } ?: return@launch
@@ -274,28 +290,61 @@ class Vm(a: Application) : AndroidViewModel(a) {
         try { core!!.streamStart(n.documentId, false) } catch (e: CancellationException) { throw e } catch (_: Exception) {}
     }
 
-    /** ❤: liked tracks are the library (Медиатека) and seed recommendations. Telegram is never touched. */
-    fun toggleLike() { current?.let { setLiked(it, !it.liked) } }
+    /** ❤: the track in or out of «Мне нравится». Telegram is never touched. */
+    fun toggleLike() { current?.let { t -> setIn(LIKED, t, !t.liked) } }
 
-    /** Track just taken out of the library by ✕, offered back for a few seconds. */
+    /** Track just marked ✕, offered back for a few seconds. */
     var undo by mutableStateOf<TrackInfo?>(null)
-    /** ✕: a liked track leaves the library, then (liked or not) it is skipped like `next`. */
+    /** ✕ «Не нравится»: out of the library, recs and shuffle (playlists keep it), then skipped like `next`. */
     fun dismiss() {
         val t = current ?: return
-        if (t.liked) {
-            setLiked(t, false); undo = t
-            viewModelScope.launch { delay(4000); if (undo == t) undo = null }
-        }
+        setDisliked(t, true); undo = t
+        viewModelScope.launch { delay(4000); if (undo == t) undo = null }
         next()
     }
-    fun restore() { undo?.let { setLiked(it, true) }; undo = null }
+    fun restore() { undo?.let { setDisliked(it, false) }; undo = null }
 
-    private fun setLiked(t: TrackInfo, liked: Boolean) {
+    private fun patch(id: Long, f: (TrackInfo) -> TrackInfo) {
+        val upd = { l: List<TrackInfo> -> l.map { if (it.documentId == id) f(it) else it } }
+        queue = upd(queue); orig = upd(orig); results = upd(results)
+    }
+
+    private fun setDisliked(t: TrackInfo, on: Boolean) {
+        run { core!!.setDisliked(t.documentId, on); patch(t.documentId) { it.copy(disliked = on) }; reloadLib() }
+    }
+
+    // --- playlists (local db only) ---
+    suspend fun playlistTracks(id: Long): List<TrackInfo> = try { core!!.playlistTracks(id) } catch (e: CancellationException) { throw e } catch (e: Exception) { error = msg(e); emptyList() }
+    suspend fun playlistsWith(t: TrackInfo): List<Long> = try { core!!.playlistsWith(t.documentId) } catch (e: CancellationException) { throw e } catch (e: Exception) { emptyList() }
+
+    /** Adding adopts the track: no longer ✨, no longer ✕ (the core does the same). */
+    fun setIn(pl: Long, t: TrackInfo, on: Boolean) {
         run {
-            core!!.setLiked(t.documentId, liked)
-            val upd = { l: List<TrackInfo> -> l.map { if (it.documentId == t.documentId) it.copy(liked = liked) else it } }
-            queue = upd(queue); orig = upd(orig); results = upd(results)
-            tracks = core!!.tracks("")
+            core!!.setInPlaylist(pl, t.documentId, on)
+            patch(t.documentId) { if (on) it.copy(liked = it.liked || pl == LIKED, rec = false, disliked = false) else if (pl == LIKED) it.copy(liked = false) else it }
+            reloadLib()
+        }
+    }
+    /** New playlist, optionally with a first track; `done` gets its id. */
+    fun createPlaylist(name: String, first: TrackInfo? = null, done: (Long) -> Unit = {}) {
+        if (name.isBlank()) return
+        run { val id = core!!.createPlaylist(name); if (first != null) { setIn(id, first, true) } else reloadLib(); done(id) }
+    }
+    fun renamePlaylist(id: Long, name: String) { if (name.isNotBlank()) run { core!!.renamePlaylist(id, name); reloadLib() } }
+    fun deletePlaylist(id: Long) { run { playlists.firstOrNull { it.id == id }?.cover?.let { File(it).delete() }; core!!.deletePlaylist(id); reloadLib() } }
+    fun savePlaylistOrder(id: Long, ids: List<Long>) { run { core!!.setPlaylistOrder(id, ids); reloadLib() } }
+    /** Copies the picked image into app storage (a content:// grant does not survive); null resets to the collage. */
+    fun setPlaylistCover(id: Long, uri: Uri?) {
+        run {
+            val app = getApplication<Application>()
+            playlists.firstOrNull { it.id == id }?.cover?.let { File(it).delete() }
+            val path = uri?.let {
+                // new name each time so screens keyed on the path redraw
+                val f = File(app.filesDir, "covers").apply { mkdirs() }.resolve("pl_${id}_${System.currentTimeMillis()}.jpg")
+                withContext(Dispatchers.IO) { app.contentResolver.openInputStream(it)!!.use { i -> f.outputStream().use { o -> i.copyTo(o) } } }
+                f.path
+            }
+            core!!.setPlaylistCover(id, path); reloadLib()
         }
     }
 
