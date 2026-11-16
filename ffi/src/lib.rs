@@ -49,7 +49,7 @@ pub struct TrackInfo {
     pub artists: Vec<String>,
     /// ❤: in «Мне нравится»
     pub liked: bool,
-    /// a recommendation not adopted into a playlist yet (✨)
+    /// fetched by the app (recommendation ✨ or search download), not adopted into a playlist yet
     pub rec: bool,
     /// ✕ «Не нравится»
     pub disliked: bool,
@@ -302,10 +302,15 @@ impl App {
             }
         }
         let Some(t) = got else { return Ok(None) };
+        // fetched by the app, so out of the library until put in a playlist (a no-op if it was adopted before)
+        if self.store.playlists_with(t.document_id).await.map_err(e)?.is_empty() {
+            self.store.mark_rec(t.document_id).await.map_err(e)?;
+        }
         // the fresh Track from the bot does not know about ❤ / ✕ set earlier
         let t = self.store.track(t.document_id).await.map_err(e)?.unwrap_or(t);
         let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
-        Ok(Some(info(t, &names)))
+        // not a recommendation for the eye: no ✨ in the queue
+        Ok(Some(info(Track { rec: false, ..t }, &names)))
     }
 
     /// Starts downloading the track (`foreground` = it is the one playing, else it is a prefetch) and returns its size in bytes.

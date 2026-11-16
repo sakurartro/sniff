@@ -14,7 +14,7 @@ pub struct Track {
     pub message_id: i32,
     /// ❤: in the «Мне нравится» playlist (computed, not a column)
     pub liked: bool,
-    /// a recommendation nobody adopted yet (adding it to a playlist clears it)
+    /// fetched by the app (recommendation or search download), not adopted yet (adding it to a playlist clears it)
     pub rec: bool,
     /// ✕ «Не нравится»: out of the library, recommendations and shuffle; stays in playlists
     pub disliked: bool,
@@ -61,6 +61,12 @@ impl Store {
         let _ = c.execute("ALTER TABLE tracks ADD COLUMN rec INTEGER NOT NULL DEFAULT 0", ()).await;
         // the old `liked` column (❤ = library) is left unused: ❤ now is the «Мне нравится» playlist, started empty
         let _ = c.execute("ALTER TABLE tracks ADD COLUMN disliked INTEGER NOT NULL DEFAULT 0", ()).await;
+        // once: recommendations ❤'d under the old scheme were in the library, keep them there (no `liked` column on new DBs)
+        let v: i64 = c.query("PRAGMA user_version", ()).await?.next().await?.map(|r| r.get(0)).transpose()?.unwrap_or(0);
+        if v < 1 {
+            let _ = c.execute("UPDATE tracks SET rec=0 WHERE rec=1 AND liked=1", ()).await;
+            c.execute("PRAGMA user_version=1", ()).await?;
+        }
         Ok(Self(c))
     }
 
@@ -275,8 +281,9 @@ impl Store {
         Ok(out)
     }
 
-    /// Empty query lists the library (newest first): chat tracks plus everything in a playlist, minus ✕;
-    /// what source bots deliver (recommendations, search downloads) joins it only via a playlist.
+    /// Empty query lists the library (newest first): chat tracks (bot chats included, they are often the
+    /// whole library) plus everything in a playlist, minus ✕; what the app itself fetched (recommendations,
+    /// search downloads, `rec`) joins it only via a playlist.
     /// Otherwise FTS prefix search over all tracks.
     pub async fn tracks(&self, query: &str) -> Result<Vec<Track>> {
         let q = query.split_whitespace().map(|w| format!("\"{}\"*", w.replace('"', ""))).collect::<Vec<_>>().join(" ");
@@ -284,8 +291,7 @@ impl Store {
             return self
                 .list(
                     &format!(
-                        "SELECT {COLS} FROM tracks t WHERE t.disliked=0 AND ((t.rec=0 AND t.chat_id NOT IN (SELECT id FROM chats WHERE bot IS NOT NULL AND bot<>'')) \
-                         OR EXISTS(SELECT 1 FROM playlist_tracks p WHERE p.document_id=t.document_id)) ORDER BY t.message_id DESC"
+                        "SELECT {COLS} FROM tracks t WHERE t.disliked=0 AND (t.rec=0 OR EXISTS(SELECT 1 FROM playlist_tracks p WHERE p.document_id=t.document_id)) ORDER BY t.message_id DESC"
                     ),
                     (),
                 )
@@ -337,11 +343,14 @@ mod tests {
         assert_eq!(s.tracks("").await.unwrap().len(), 1);
         assert_eq!(s.tracks("other").await.unwrap().len(), 1); // search sees it
         assert_eq!(s.all_tracks().await.unwrap().len(), 2);
-        // tracks from a source bot chat stay out of the library too
+        // tracks of a bot chat are the library like any chat's, unless the app fetched them itself
         s.upsert_chat(2, "Bot").await.unwrap();
         s.set_bot(2, "inline").await.unwrap();
+        s.add_track(&t(13, "Own download", 2)).await.unwrap();
+        assert_eq!(s.tracks("").await.unwrap().len(), 2);
         s.add_track(&t(12, "Fetched", 2)).await.unwrap();
-        assert_eq!(s.tracks("").await.unwrap().len(), 1);
+        s.mark_rec(12).await.unwrap();
+        assert_eq!(s.tracks("").await.unwrap().len(), 2);
         // ❤ = «Мне нравится»: adopts the rec, newest on top, no duplicates
         s.set_in_playlist(LIKED, 11, true).await.unwrap();
         s.set_in_playlist(LIKED, 10, true).await.unwrap();
@@ -349,14 +358,14 @@ mod tests {
         let t11 = s.track(11).await.unwrap().unwrap();
         assert!(t11.liked && !t11.rec);
         assert_eq!(ids(s.playlist_tracks(LIKED).await.unwrap()), vec![10, 11]);
-        assert_eq!(s.tracks("").await.unwrap().len(), 2);
+        assert_eq!(s.tracks("").await.unwrap().len(), 3);
         // own playlists append at the end, keep an edited order, and are deletable
         let p = s.create_playlist("Mix").await.unwrap();
         for d in [12, 10] {
             s.set_in_playlist(p, d, true).await.unwrap();
         }
         assert_eq!(ids(s.playlist_tracks(p).await.unwrap()), vec![12, 10]);
-        assert_eq!(s.tracks("").await.unwrap().len(), 3); // the bot track is in a playlist now
+        assert_eq!(s.tracks("").await.unwrap().len(), 4); // the fetched track is in a playlist now
         assert_eq!(s.playlists_with(10).await.unwrap(), vec![LIKED, p]);
         s.set_playlist_order(p, &[10, 12]).await.unwrap();
         assert_eq!(ids(s.playlist_tracks(p).await.unwrap()), vec![10, 12]);
