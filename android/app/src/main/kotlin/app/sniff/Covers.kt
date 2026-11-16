@@ -4,6 +4,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.util.LruCache
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -15,6 +18,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import uniffi.sniff_ffi.App
+import uniffi.sniff_ffi.BotHit
 import uniffi.sniff_ffi.TrackInfo
 import java.io.File
 import java.net.URL
@@ -29,6 +33,9 @@ object Covers {
     lateinit var core: App
     lateinit var tracksDir: File // where `<id>.audio` files and `covers/` live
     private val mem = LruCache<Long, Bitmap>(200)
+    private val hitMem = LruCache<String, Bitmap>(50)
+    /** Bumped when a track's cover file changes (tag art replaced the thumb), so shown covers reload. */
+    var rev by mutableIntStateOf(0)
     private val gate = Semaphore(3) // shortcut: fixed 3 Telegram lookups at once, lower if it flood-waits
     private val itunesGate = Semaphore(2) // separate so slow iTunes lookups don't block Telegram thumbs
     // loads outlive the rows that asked for them, so scrolling away doesn't throw the work out
@@ -47,16 +54,21 @@ object Covers {
     }
 
     private suspend fun load(t: TrackInfo): File? = withContext(Dispatchers.IO) {
-        File(dir(), "${t.documentId}.emb.jpg").takeIf { it.exists() }?.let { return@withContext it }
+        val emb = File(dir(), "${t.documentId}.emb.jpg")
+        if (emb.exists()) return@withContext emb
+        // full-size tag art beats Telegram's small thumb once the file is downloaded; `.noemb` = file has none
+        val noEmb = File(dir(), "${t.documentId}.noemb")
+        if (!noEmb.exists() && File(tracksDir, "${t.documentId}.audio").exists()) {
+            embedded(t, emb)?.let { return@withContext it } ?: noEmb.createNewFile()
+        }
         val jpg = File(dir(), "${t.documentId}.jpg")
         if (jpg.exists()) return@withContext jpg
-        embedded(t, jpg)?.let { return@withContext it }
         val none = File(dir(), "${t.documentId}.none")
         if (none.exists()) return@withContext null
         gate.withPermit {
             runCatching { core.cover(t.documentId) }.getOrNull()?.let { return@withPermit File(it) }
             // null = network error, so no `.none`: retry next time
-            val hit = itunesGate.withPermit { runCatching { itunes(t, jpg) }.getOrNull() } ?: return@withPermit null
+            val hit = itunesGate.withPermit { runCatching { itunes(t.performer, t.title, jpg) }.getOrNull() } ?: return@withPermit null
             if (!hit) none.createNewFile()
             jpg.takeIf { it.exists() }
         }
@@ -71,17 +83,46 @@ object Covers {
      */
     suspend fun upgrade(t: TrackInfo): File? = withContext(Dispatchers.IO) {
         val emb = File(dir(), "${t.documentId}.emb.jpg")
-        if (!emb.exists()) embedded(t, emb)
-        mem.remove(t.documentId)
+        val fresh = !emb.exists() && embedded(t, emb) != null
+        if (fresh) { mem.remove(t.documentId); withContext(Dispatchers.Main) { rev++ } }
         emb.takeIf { it.exists() }
     }
+
+    /** Already decoded cover, for drawing without a blank frame. */
+    fun memory(t: TrackInfo): Bitmap? = mem.get(t.documentId)
 
     suspend fun bitmap(t: TrackInfo): Bitmap? {
         mem.get(t.documentId)?.let { return it }
         val f = file(t) ?: return null
-        val bmp = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(f.path) } ?: return null
+        val bmp = withContext(Dispatchers.IO) { decode(f) } ?: return null
         mem.put(t.documentId, bmp)
         return bmp
+    }
+
+    /** Cover for a bot search result (nothing downloaded yet): iTunes only, cached as `hit_<hash>.jpg`. */
+    suspend fun hitBitmap(h: BotHit): Bitmap? {
+        val key = "${norm(h.artist)}_${norm(h.title)}"
+        hitMem.get(key)?.let { return it }
+        val bmp = withContext(Dispatchers.IO) {
+            val name = "hit_${key.hashCode().toUInt()}"
+            val (jpg, none) = File(dir(), "$name.jpg") to File(dir(), "$name.none")
+            if (!jpg.exists() && !none.exists()) {
+                val hit = itunesGate.withPermit { runCatching { itunes(h.artist, h.title, jpg) }.getOrNull() }
+                if (hit == false) none.createNewFile()
+            }
+            jpg.takeIf { it.exists() }?.let(::decode)
+        } ?: return null
+        hitMem.put(key, bmp)
+        return bmp
+    }
+
+    /** Decoded at most ~600px: tag art can be 3000px, and 200 of those in [mem] would run out of memory. */
+    private fun decode(f: File): Bitmap? {
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(f.path, o)
+        var s = 1
+        while (maxOf(o.outWidth, o.outHeight) / (s * 2) >= 600) s *= 2
+        return BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = s })
     }
 
     private fun embedded(t: TrackInfo, out: File): File? {
@@ -95,18 +136,23 @@ object Covers {
 
     private fun norm(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
 
+    /** Title without "(Remix)", "[Live]", "feat. X" etc., so versions compare equal but different songs don't. */
+    private val extras = Regex("\\(.*?\\)|\\[.*?\\]|\\s(feat|ft)\\.?\\s.*", RegexOption.IGNORE_CASE)
+    private fun bareTitle(s: String) = norm(s.replace(extras, ""))
+
     /** true = saved, false = reachable but no confident match, null = network failure (throws). */
-    private fun itunes(t: TrackInfo, out: File): Boolean? {
+    private fun itunes(performer: String, title: String, out: File): Boolean? {
         // shortcut: needs a performer, since a bare title matches the wrong song too often; revisit if many tracks lack one
-        if (t.performer.isBlank()) return false
-        val q = URLEncoder.encode("${t.performer} ${t.title}", "UTF-8")
+        val (bare, artist) = bareTitle(title) to norm(performer)
+        if (bare.isEmpty() || artist.isEmpty()) return false
+        val q = URLEncoder.encode("$performer $title", "UTF-8")
         val res = JSONObject(URL("https://itunes.apple.com/search?media=music&entity=song&limit=5&term=$q").readText()).getJSONArray("results")
-        val (title, artist) = norm(t.title) to norm(t.performer)
         for (i in 0 until res.length()) {
             val r = res.getJSONObject(i)
-            val (rt, ra) = norm(r.optString("trackName")) to norm(r.optString("artistName"))
-            if (rt.isEmpty() || ra.isEmpty()) continue
-            if ((title.contains(rt) || rt.contains(title)) && (artist.contains(ra) || ra.contains(artist))) {
+            val (rt, ra) = bareTitle(r.optString("trackName")) to norm(r.optString("artistName"))
+            if (ra.isEmpty()) continue
+            // exact song title (loose "contains" gave "Love" the cover of "Love Story"); the artist may list extra names
+            if (rt == bare && (artist.contains(ra) || ra.contains(artist))) {
                 val img = r.optString("artworkUrl100").replace("100x100bb", "600x600bb")
                 out.writeBytes(URL(img).readBytes())
                 return true

@@ -366,12 +366,14 @@ fun TrackRow(t: TrackInfo, active: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** A song the bot offers, not downloaded yet: no cover until it is fetched. */
+/** A song the bot offers, not downloaded yet: cover from iTunes by artist + title. */
 @Composable
 fun HitRow(h: BotHit, loading: Boolean, onClick: () -> Unit) {
+    val cover by produceState<Bitmap?>(null, h.artist, h.title) { value = Covers.hitBitmap(h) }
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
-            if (loading) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) else Text("♪", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 20.sp)
+            cover?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+            if (loading) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) else if (cover == null) Text("♪", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 20.sp)
         }
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             Text(h.title, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -595,7 +597,9 @@ fun grad(name: String, dark: Boolean = false): Brush {
 /** Cover when one is found, else a gradient derived from the title. */
 @Composable
 fun Art(t: TrackInfo, modifier: Modifier, radius: Dp) {
-    val cover by produceState<Bitmap?>(null, t.documentId) { value = Covers.bitmap(t) }
+    // keyed state: a reused slot (player, unkeyed lists) must not keep the previous track's cover while loading
+    var cover by remember(t.documentId) { mutableStateOf(Covers.memory(t)) }
+    LaunchedEffect(t.documentId, Covers.rev) { cover = Covers.bitmap(t) }
     cover?.let { Image(it.asImageBitmap(), null, modifier.clip(RoundedCornerShape(radius)), contentScale = ContentScale.Crop); return }
     Box(modifier.clip(RoundedCornerShape(radius)).background(grad(t.title + t.performer)), Alignment.Center) {
         Text("♪", color = Color.White.copy(alpha = 0.85f), fontSize = 22.sp)
