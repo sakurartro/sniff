@@ -42,26 +42,33 @@
 - `peer_ref` — кэш `PeerRef` в памяти, один скан диалогов на чат за запуск.
 
 ### `store.rs` — `Store`
-- `chats(id, title, selected, cursor)`
-- `tracks(document_id PK, title, performer, duration, size, chat_id, message_id)` — дедуп по `document_id` (форварды схлопываются).
-- `tracks_fts` (fts5) — префиксный поиск по title/performer.
+- `chats(id, title, selected, cursor, top, done, bot, muted, source)` — `cursor`/`done` = обратный скан истории, `top` = самое новое просканированное сообщение (дальше смотрим только выше), `source` = бот, подключённый пользователем.
+- `tracks(document_id PK, title, performer, duration, size, chat_id, message_id, date, last_played, rec, disliked)` — дедуп по `document_id`; `rec` = скачано приложением (рекомендация/поиск), не в библиотеке, пока не в плейлисте.
+- `tracks_fts` (fts5, ё=е) — префиксный поиск, `LIMIT 200`.
+- `playlists`, `playlist_tracks` — плейлисты; id 1 = «Мне нравится» (❤).
+- Миграции — `user_version` (сейчас 3).
+- Библиотека = треки выбранных чатов + всё, что лежит в плейлисте, минус ✕ и `rec`.
+
+### `stream.rs` — `Streams`
+Трек растёт в `<id>.part` (+ `<id>.map`, бит на чанк 512 КБ), плеер читает через `read`; готовый файл → `<id>.audio`. 4 воркера на играющий трек, фоновая очередь для префетча следующего. Пропущенный трек, скачанный меньше чем наполовину, бросается. Запрос чанка — таймаут 20 с + повторы. LRU-кэш с лимитом; играющий (`set_playing`) и скачиваемые треки не удаляются.
+
+### `recs.rs`
+Last.fm (`track.getSimilar`, запасной путь через артистов) выбирает песни, бот-источник (только подключённый через `connect_bot`) доставляет аудио в свой чат. Доставленное аудио должно совпасть по тегам (`matches`, включая версии live/remix/slowed…); один диалог на бот-чат одновременно.
 
 ## ffi — `App`
-`open_app(data_dir, cache_dir)`; `data_dir/tg/` — сессия + `library.sqlite`, `cache_dir/tracks/` — `<id>.audio`, `covers/`.
-Методы: логин, `refresh_chats`, `chats`, `set_selected`, `selected_chats`, `sync_step`, `tracks(query)`, `download(id) -> path`, `cover(id)`, `qr_state`, `stop_qr`.
+`open_app(data_dir, cache_dir, device_model, system_version)` — один `App` на процесс (Kotlin переиспользует его при пересоздании `Vm`). Futures UniFFI опрашиваются потоком вызывающего, поэтому Kotlin вызывает ядро с `Dispatchers.Default`, а fallback-рантайм async-compat многопоточный. Методы: логин (код, QR, 2FA с повтором пароля), чаты, `sync_step`, `tracks`, плейлисты, `recommend`, `bot_search`/`bot_get`, `stream_start/read/await_download`, `set_playing`, кэш, `cover`.
 
 ## Android
-- `Vm` — всё состояние UI и очередь. `play(list, i)` → `load()`: **ждёт полной закачки** `core.download()`, затем `Covers.file`, затем `MediaItem(file://…)` в ExoPlayer, старт `PlaybackService`.
-- `Shared` — синглтон `ExoPlayer` (audio focus, noisy, wake lock) + колбэки next/prev.
-- `PlaybackService` — `MediaSessionService`, `ForwardingPlayer` добавляет next/prev в уведомление (очередь живёт в Vm — ограничение).
-- `Covers` — обложка: тег из файла → Telegram thumb → iTunes; LRU в памяти, `.none` = окончательный промах.
-- Ui.kt — Compose-экраны (логин, чаты, библиотека, поиск, плеер).
+- `Vm` — состояние UI и очередь. `load()`: `set_playing`, затем играет `file://` (если трек скачан) или `sniff://t/<id>` через `TgDataSource` (стриминг из Rust); обложка из тега подменяется, когда файл докачан; следующий трек префетчится.
+- `Shared` — синглтон `ExoPlayer` и ядро. `PlaybackService` (`MediaSessionService`) плеер не освобождает. Очередь живёт в `Vm`: после смахивания приложения кнопки next/prev в уведомлении не работают (известное ограничение).
+- `Covers` — тег из файла → Telegram thumb → iTunes (с паузой после 403), кэш в памяти по байтам.
+- Ui.kt / Playlists.kt / SettingsScreen.kt — Compose-экраны.
 
 ## Сборка
 GitHub Actions (`.github/workflows/android.yml`): `cargo ndk` → `.so` (arm64-v8a), uniffi → Kotlin, `gradle assembleDebug`, артефакт APK. Ключи — секреты `SNIFF_API_ID/HASH`.
 
-## Поток воспроизведения сейчас
+## Поток воспроизведения
 ```
-тап по треку → Vm.load → App.download (весь файл) → Covers.file → ExoPlayer(file://) → play
+тап → Vm.load → set_playing → (скачан? file:// : sniff:// → TgDataSource → stream_read) → ExoPlayer
 ```
-Задержка старта = время полной закачки файла.
+Старт — после первого чанка в 512 КБ. APK собирается как release (не debuggable), бэкап приложения выключен: `tg.session` не должен покидать телефон.
