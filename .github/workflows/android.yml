@@ -21,7 +21,7 @@ jobs:
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: 17 }
       - uses: dtolnay/rust-toolchain@stable
-        with: { targets: aarch64-linux-android,armv7-linux-androideabi }
+        with: { targets: "aarch64-linux-android,armv7-linux-androideabi" }
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p sniff-core
       - run: cargo install cargo-ndk --locked
