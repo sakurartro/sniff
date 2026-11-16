@@ -50,6 +50,8 @@ impl Store {
              CREATE TABLE IF NOT EXISTS playlists(id INTEGER PRIMARY KEY, name TEXT NOT NULL, cover TEXT);
              -- one row per (playlist, track): no duplicates; pos orders the playlist
              CREATE TABLE IF NOT EXISTS playlist_tracks(playlist_id INTEGER NOT NULL, document_id INTEGER NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY(playlist_id, document_id));
+             -- every chat/message a document was seen in (forwards): if one copy is deleted another still plays
+             CREATE TABLE IF NOT EXISTS track_places(document_id INTEGER NOT NULL, chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY(document_id, chat_id, message_id));
              CREATE INDEX IF NOT EXISTS pt_doc ON playlist_tracks(document_id);
              INSERT OR IGNORE INTO playlists(id,name) VALUES(1,'Мне нравится');",
         )
@@ -87,6 +89,10 @@ impl Store {
             c.execute("INSERT INTO tracks_fts(rowid,title,performer) SELECT document_id, replace(replace(title,'ё','е'),'Ё','Е'), replace(replace(performer,'ё','е'),'Ё','Е') FROM tracks", ()).await?;
             c.execute("PRAGMA user_version=3", ()).await?;
         }
+        if v < 4 {
+            c.execute("INSERT OR IGNORE INTO track_places SELECT document_id,chat_id,message_id FROM tracks", ()).await?;
+            c.execute("PRAGMA user_version=4", ()).await?;
+        }
         Ok(Self(c))
     }
 
@@ -111,7 +117,8 @@ impl Store {
     }
 
     pub async fn selected_chats(&self) -> Result<Vec<i64>> {
-        let mut rows = self.0.query("SELECT id FROM chats WHERE selected=1", ()).await?;
+        // source bot chats are not synced: what they delivered is not the library
+        let mut rows = self.0.query("SELECT id FROM chats WHERE selected=1 AND source=0", ()).await?;
         let mut out = vec![];
         while let Some(r) = rows.next().await? {
             out.push(r.get(0)?);
@@ -209,10 +216,34 @@ impl Store {
                 params![t.document_id, t.title.as_str(), t.performer.as_str(), t.duration, t.size as i64, t.chat_id, t.message_id, rec as i64, t.date],
             )
             .await?;
+        // also for a document already known: this is one more place it lives in
+        self.0.execute("INSERT OR IGNORE INTO track_places(document_id,chat_id,message_id) VALUES(?1,?2,?3)", params![t.document_id, t.chat_id, t.message_id]).await?;
         if n > 0 {
             self.0.execute("INSERT INTO tracks_fts(rowid,title,performer) VALUES(?1,?2,?3)", params![t.document_id, fold(&t.title), fold(&t.performer)]).await?;
         }
         Ok(n > 0)
+    }
+
+    /// (chat, message) pairs holding the document, the one the track row points to first.
+    pub async fn places(&self, document_id: i64) -> Result<Vec<(i64, i32)>> {
+        let mut rows = self
+            .0
+            .query(
+                "SELECT p.chat_id,p.message_id FROM track_places p JOIN tracks t ON t.document_id=p.document_id WHERE p.document_id=?1 ORDER BY (p.chat_id=t.chat_id AND p.message_id=t.message_id) DESC",
+                params![document_id],
+            )
+            .await?;
+        let mut out = vec![];
+        while let Some(r) = rows.next().await? {
+            out.push((r.get(0)?, r.get(1)?));
+        }
+        Ok(out)
+    }
+
+    /// Logout: the chat list and scan state of the old account go, tracks and playlists stay.
+    pub async fn forget_chats(&self) -> Result<()> {
+        self.0.execute("DELETE FROM chats", ()).await?;
+        Ok(())
     }
 
     pub async fn set_disliked(&self, document_id: i64, disliked: bool) -> Result<()> {
@@ -359,7 +390,7 @@ impl Store {
             return self
                 .list(
                     &format!(
-                        "SELECT {COLS} FROM tracks t WHERE t.disliked=0 AND EXISTS(SELECT 1 FROM playlist_tracks p WHERE p.document_id=t.document_id) OR (t.disliked=0 AND t.rec=0 AND t.chat_id IN (SELECT id FROM chats WHERE selected=1)) ORDER BY t.date DESC, t.message_id DESC"
+                        "SELECT {COLS} FROM tracks t WHERE t.disliked=0 AND EXISTS(SELECT 1 FROM playlist_tracks p WHERE p.document_id=t.document_id) OR (t.disliked=0 AND t.rec=0 AND t.chat_id IN (SELECT id FROM chats WHERE selected=1 AND source=0)) ORDER BY t.date DESC, t.message_id DESC"
                     ),
                     (),
                 )
@@ -429,6 +460,7 @@ mod tests {
         s.set_bot(1, "inline").await.unwrap();
         assert_eq!(s.selected_bots().await.unwrap(), vec![(1, Some("inline".into()))]);
         s.set_bot(1, "").await.unwrap(); // checked: not a bot
+        s.0.execute("UPDATE chats SET source=0 WHERE id=1", ()).await.unwrap();
         assert_eq!(s.last_played().await.unwrap()[&10], 0);
         // a recommendation is known but not in the library until put in a playlist
         s.add_fetched(&t(11, "Other", 1)).await.unwrap(); // already known as a rec: untouched
@@ -440,14 +472,22 @@ mod tests {
         s.upsert_chat(2, "Bot").await.unwrap();
         s.set_selected(2, true).await.unwrap();
         s.set_bot(2, "inline").await.unwrap();
+        s.set_source(2).await.unwrap();
+        assert_eq!(s.selected_chats().await.unwrap(), vec![1]); // a source bot chat is not synced
         s.add_track(&t(13, "Own download", 2)).await.unwrap();
-        assert_eq!(s.tracks("").await.unwrap().len(), 2);
+        assert_eq!(s.tracks("").await.unwrap().len(), 1); // nor is it the library
         assert!(s.add_fetched(&t(12, "Fetched", 2)).await.unwrap());
-        assert_eq!(s.tracks("").await.unwrap().len(), 2);
+        assert_eq!(s.tracks("").await.unwrap().len(), 1);
+        // the same document forwarded elsewhere is one more place
+        assert!(!s.add_track(&t(10, "Hello World", 5)).await.unwrap());
+        let mut places = s.places(10).await.unwrap();
+        assert_eq!(places[0], (1, 10)); // the row's own place first
+        places.sort();
+        assert_eq!(places, vec![(1, 10), (2, 10), (5, 10)]);
         // a fetch of a document you already own must not hide it from the library
         assert!(!s.add_fetched(&t(13, "Own download", 2)).await.unwrap());
         assert!(!s.track(13).await.unwrap().unwrap().rec);
-        assert_eq!(s.tracks("").await.unwrap().len(), 2);
+        assert_eq!(s.tracks("").await.unwrap().len(), 1);
         // ❤ = «Мне нравится»: adopts the rec, newest on top, no duplicates
         s.set_in_playlist(LIKED, 11, true).await.unwrap();
         s.set_in_playlist(LIKED, 10, true).await.unwrap();
@@ -455,14 +495,14 @@ mod tests {
         let t11 = s.track(11).await.unwrap().unwrap();
         assert!(t11.liked && !t11.rec);
         assert_eq!(ids(s.playlist_tracks(LIKED).await.unwrap()), vec![10, 11]);
-        assert_eq!(s.tracks("").await.unwrap().len(), 3);
+        assert_eq!(s.tracks("").await.unwrap().len(), 2);
         // own playlists append at the end, keep an edited order, and are deletable
         let p = s.create_playlist("Mix").await.unwrap();
         for d in [12, 10] {
             s.set_in_playlist(p, d, true).await.unwrap();
         }
         assert_eq!(ids(s.playlist_tracks(p).await.unwrap()), vec![12, 10]);
-        assert_eq!(s.tracks("").await.unwrap().len(), 4); // the fetched track is in a playlist now
+        assert_eq!(s.tracks("").await.unwrap().len(), 3); // the fetched track is in a playlist now
         assert_eq!(s.playlists_with(10).await.unwrap(), vec![LIKED, p]);
         s.set_playlist_order(p, &[10, 12]).await.unwrap();
         assert_eq!(ids(s.playlist_tracks(p).await.unwrap()), vec![10, 12]);

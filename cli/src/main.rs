@@ -10,7 +10,12 @@ fn prompt(msg: &str) -> Result<String> {
     Ok(s.trim().to_string())
 }
 
-const HELP: &str = "usage: sniff <login | chats | select <chat_id> | unselect <chat_id> | sync [pages] | songs [query] | get <document_id> | cover [document_id] | recs <seed document_id...> | bottest <bot> <artist> <title>>\nenv: SNIFF_DIR (data dir), TG_API_ID + TG_API_HASH (optional own keys), LASTFM_API_KEY";
+/// Argument `i`, or the usage text as the error instead of an index panic.
+fn arg(args: &[String], i: usize) -> Result<&str> {
+    args.get(i).map(String::as_str).ok_or_else(|| anyhow::anyhow!("missing argument\n{HELP}"))
+}
+
+const HELP: &str = "usage: sniff <login | login-link | probe <phone> | chats | select <chat_id> | unselect <chat_id> | sync [pages] | songs [query] | get <document_id> | cover [document_id] | recs <seed document_id...> | bottest <bot> <artist> <title>>\nenv: SNIFF_DIR (data dir), TG_API_ID + TG_API_HASH (optional own keys), LASTFM_API_KEY";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -26,7 +31,7 @@ async fn main() -> Result<()> {
     // offline commands first: no network needed
     match cmd {
         "select" | "unselect" => {
-            if !store.set_selected(args[1].parse()?, cmd == "select").await? {
+            if !store.set_selected(arg(&args, 1)?.parse()?, cmd == "select").await? {
                 anyhow::bail!("unknown chat id: run `chats` first and use an id from its list");
             }
             return Ok(());
@@ -68,7 +73,7 @@ async fn main() -> Result<()> {
             }
             println!("ok");
         }
-        "probe" => println!("{}", tg.probe_code(&args[1]).await?),
+        "probe" => println!("{}", tg.probe_code(arg(&args, 1)?).await?),
         "login" => {
             if tg.is_authorized().await? {
                 println!("already logged in");
@@ -107,7 +112,7 @@ async fn main() -> Result<()> {
         }
         "get" => {
             eprintln!("downloading...");
-            println!("{}", tg.download(&store, args[1].parse()?, &dir.join("cache")).await?.display());
+            println!("{}", tg.download(&store, arg(&args, 1)?.parse()?, &dir.join("cache")).await?.display());
         }
         "cover" => {
             // `cover <id>` fetches one; `cover` alone reports thumb coverage over the first 30 tracks
@@ -127,7 +132,7 @@ async fn main() -> Result<()> {
         "recs" => {
             // `recs <document_id...>`: seeds, most recent last; needs a selected source bot chat
             let mut seeds = vec![];
-            for id in &args[1..] {
+            for id in args.get(1..).unwrap_or_default() {
                 seeds.push(store.track(id.parse()?).await?.ok_or_else(|| anyhow::anyhow!("unknown track {id}"))?);
             }
             match sniff_core::recs::Recs::default().next(&tg, &store, &seeds).await? {
@@ -137,9 +142,9 @@ async fn main() -> Result<()> {
         }
         "bottest" => {
             // `bottest <@bot> <artist> <title>`: connects the bot like the app does, times search and download
-            let (bot, c) = (&args[1], sniff_core::recs::Cand { artist: args[2].clone(), title: args[3].clone(), duration: 0 });
+            let (bot, c) = (arg(&args, 1)?, sniff_core::recs::Cand { artist: arg(&args, 2)?.to_string(), title: arg(&args, 3)?.to_string(), duration: 0 });
             let kind = tg.connect_bot(&store, bot).await?;
-            let chat = store.selected_bots().await?.into_iter().rev().find(|(_, k)| k.as_deref() == Some(kind.as_str())).map(|(id, _)| id).unwrap();
+            let chat = store.selected_bots().await?.into_iter().rev().find(|(_, k)| k.as_deref() == Some(kind.as_str())).map(|(id, _)| id).ok_or_else(|| anyhow::anyhow!("bot chat was not connected"))?;
             println!("{bot}: kind={kind}");
             let t0 = std::time::Instant::now();
             let got = if kind == "text" {

@@ -167,7 +167,7 @@ impl Tg {
         let mut it = self.music(&peer).offset_id(cursor);
         let (mut seen, mut new) = (0, 0);
         while seen < limit {
-            let Some(m) = it.next().await? else {
+            let Some(m) = self.guard(30, async { Ok(it.next().await?) }).await? else {
                 store.set_done(chat_id).await?;
                 // chats scanned by older versions never looked above their first scan: do it right now
                 new += self.scan_new(store, &peer, chat_id).await?;
@@ -201,7 +201,7 @@ impl Tg {
             top = store.newest_track_message(chat_id).await?;
         }
         let (mut it, mut new, mut newest, mut n) = (self.music(peer), 0, 0, 0);
-        while let Some(m) = it.next().await? {
+        while let Some(m) = self.guard(30, async { Ok(it.next().await?) }).await? {
             if m.id() <= top {
                 break;
             }
@@ -467,7 +467,7 @@ impl Tg {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let mut it = self.client.iter_messages(peer.clone()).limit(10);
             let mut fresh = vec![];
-            while let Some(m) = it.next().await? {
+            while let Some(m) = self.guard(20, async { Ok(it.next().await?) }).await? {
                 if m.id() <= seen {
                     break;
                 }
@@ -495,15 +495,33 @@ impl Tg {
     }
 
     pub async fn media_of(&self, store: &Store, document_id: i64) -> Result<Media> {
-        let t = store.track(document_id).await?.ok_or_else(|| anyhow!("unknown track"))?;
-        let peer = self.peer_ref(t.chat_id).await?;
-        let m = self.client.get_messages_by_id(peer, &[t.message_id]).await?.into_iter().next().flatten().ok_or_else(|| anyhow!("message gone"))?;
-        m.media().ok_or_else(|| anyhow!("message has no media"))
+        let places = store.places(document_id).await?;
+        let mut last = anyhow!("unknown track");
+        // the same document may sit in several chats: if one copy was deleted (or the chat left), try the next
+        for (chat_id, message_id) in places {
+            let found = self
+                .guard(20, async {
+                    let peer = self.peer_ref(chat_id).await?;
+                    let m = self.client.get_messages_by_id(peer, &[message_id]).await?.into_iter().next().flatten().ok_or_else(|| anyhow!("message gone"))?;
+                    match m.media() {
+                        // an edited post may now carry another file: it must be the very document
+                        Some(Media::Document(d)) if d.id() == document_id => Ok(Media::Document(d)),
+                        Some(_) => Err(anyhow!("message now holds other media")),
+                        None => Err(anyhow!("message has no media")),
+                    }
+                })
+                .await;
+            match found {
+                Ok(m) => return Ok(m),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
     }
 
     /// Chunk number `idx` (512 KiB each) of the document; the last one may be shorter.
     pub async fn chunk(&self, media: &Media, idx: i32) -> Result<Vec<u8>> {
-        let b = self.client.iter_download(media).skip_chunks(idx).next().await?;
+        let b = self.guard(20, async { Ok(self.client.iter_download(media).skip_chunks(idx).next().await?) }).await?;
         b.ok_or_else(|| anyhow!("chunk {idx} is past the end"))
     }
 
@@ -542,6 +560,27 @@ impl Tg {
         self.client.download_media(&thumb, &tmp).await?;
         std::fs::rename(&tmp, &path)?;
         Ok(Some(path))
+    }
+
+    /// Runs a Telegram call with a deadline. Past it the connection is assumed dead (a socket that died silently
+    /// on a network change never errors): the home DC is dropped so the next call reconnects.
+    /// shortcut: only the home DC is reset; a file DC that hangs is retried over its own connection by grammers.
+    async fn guard<T>(&self, secs: u64, f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+        match tokio::time::timeout(Duration::from_secs(secs), f).await {
+            Ok(r) => r,
+            Err(_) => {
+                if let Ok(dc) = self.session.home_dc_id() {
+                    self.handle.disconnect_from_dc(dc);
+                }
+                Err(anyhow!("Telegram не отвечает, проверьте сеть"))
+            }
+        }
+    }
+
+    /// Ends the session on Telegram's side (the "Active sessions" entry goes). Nothing in any chat is touched.
+    pub async fn log_out(&self) -> Result<()> {
+        self.client.sign_out().await?;
+        Ok(())
     }
 
     fn chat_lock(&self, chat_id: i64) -> Arc<tokio::sync::Mutex<()>> {

@@ -259,6 +259,8 @@ impl Streams {
                     bail!("chunk {c}: got {} bytes, expected {want}", b.len());
                 }
                 dl.file.write_all_at(&b, c as u64 * CH)?;
+                // the map below says "this chunk is here": make that true even if the phone dies right now
+                dl.file.sync_data()?;
                 Ok(())
             }
             .await;

@@ -21,7 +21,7 @@ fn e(x: impl std::fmt::Display) -> FfiError {
     let msg = if s.contains("FLOOD") {
         "Telegram просит подождать. Не повторяйте запрос сразу, попробуйте позже.".to_string()
     } else if s.contains("AUTH_KEY_UNREGISTERED") || s.contains("SESSION_REVOKED") || s.contains("USER_DEACTIVATED") {
-        "Сессия Telegram завершена. Войдите заново (очистите данные приложения).".to_string()
+        "Сессия Telegram завершена. Войдите заново.".to_string()
     } else if s.contains("PHONE_CODE_INVALID") {
         "Неверный код".to_string()
     } else if s.contains("PHONE_NUMBER_INVALID") {
@@ -212,6 +212,13 @@ impl App {
             *st.lock().unwrap() = next;
         });
         *self.qr_task.lock().unwrap() = Some(h);
+    }
+
+    /// Ends the Telegram session and forgets the account's chats; tracks and playlists stay. The caller wipes the
+    /// session files and restarts the process.
+    pub async fn log_out(&self) -> R<()> {
+        let _ = self.tg.log_out().await; // already revoked is fine: the local wipe must go on
+        self.store.forget_chats().await.map_err(e)
     }
 
     pub async fn refresh_chats(&self) -> R<()> {
