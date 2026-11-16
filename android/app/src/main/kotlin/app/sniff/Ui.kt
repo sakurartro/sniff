@@ -362,7 +362,7 @@ fun TrackRow(t: TrackInfo, active: Boolean, onClick: () -> Unit) {
             Text(t.title, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground)
             Text(t.performer.ifBlank { "Неизвестный исполнитель" }, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Text(fmt(t.duration.toLong() * 1000), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (t.duration > 0u) Text(fmt(t.duration.toLong() * 1000), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -475,7 +475,7 @@ fun MiniPlayer(vm: Vm, open: () -> Unit) {
 @Composable
 fun NowPlaying(vm: Vm, close: () -> Unit, goto: (String) -> Unit) {
     val t = vm.current ?: return
-    val dur = (t.duration.toLong() * 1000).coerceAtLeast(1)
+    val dur = (t.duration.toLong() * 1000).takeIf { it > 0 } ?: vm.length.coerceAtLeast(1)
     var menu by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).pointerInput(Unit) { detectTapGestures() }.systemBarsPadding().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {

@@ -69,6 +69,8 @@ class Vm(a: Application) : AndroidViewModel(a) {
     var playing by mutableStateOf(false)
     var loadingTrack by mutableStateOf(false)
     var pos by mutableLongStateOf(0L)
+    /** Player-measured length in ms, for tracks whose Telegram metadata has no duration (0 until known). */
+    var length by mutableLongStateOf(0L)
     val current get() = queue.getOrNull(index)
     var shuffle by mutableStateOf(false)
     var repeat by mutableIntStateOf(0) // 0 off, 1 all, 2 one
@@ -94,7 +96,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
         Shared.onPrev = ::prev
         player.addListener(listener)
         playing = player.isPlaying
-        viewModelScope.launch { while (true) { if (playing && !loadingTrack) pos = player.currentPosition; delay(500) } }
+        viewModelScope.launch { while (true) { if (playing && !loadingTrack) { pos = player.currentPosition; length = player.duration.coerceAtLeast(0) }; delay(500) } }
         run {
             val c = openApp(a.filesDir.resolve("tg").path, a.cacheDir.resolve("tracks").path)
             core = c; Shared.core = c
