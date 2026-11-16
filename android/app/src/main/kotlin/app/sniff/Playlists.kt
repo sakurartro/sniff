@@ -64,7 +64,7 @@ fun PlaylistTile(vm: Vm, p: PlaylistInfo, modifier: Modifier, onClick: () -> Uni
     Column(modifier.clickable(onClick = onClick)) {
         PlaylistCover(vm, p, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
         Text(p.name, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
-        Text(tracksCount(p.count), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(tracksCount(p.count.toInt()), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -102,7 +102,7 @@ fun PlaylistScreen(vm: Vm, id: Long, back: () -> Unit) {
                         val e = edit
                         if (e == null) {
                             // not loaded yet (or failed): saving an empty copy would wipe the playlist
-                            if (p.count == 0 || list.isNotEmpty()) edit = list
+                            if (p.count == 0u || list.isNotEmpty()) edit = list
                         } else {
                             if (e.map { it.documentId } != list.map { it.documentId }) vm.savePlaylistOrder(id, e.map { it.documentId })
                             edit = null
@@ -113,7 +113,7 @@ fun PlaylistScreen(vm: Vm, id: Long, back: () -> Unit) {
                 }
                 PlaylistCover(vm, p, Modifier.size(220.dp), 14.dp)
                 Text(p.name, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp))
-                Text(tracksCount(p.count), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(tracksCount(p.count.toInt()), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(14.dp))
                 if (edit == null) Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Pill("play", "Слушать", Modifier.weight(1f), list.isNotEmpty()) { vm.play(list, 0) }
