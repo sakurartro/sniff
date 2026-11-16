@@ -154,10 +154,11 @@ pub struct Recs {
 }
 
 impl Recs {
-    /// One new song similar to the last 3 liked of `seeds` (most recent last), fetched and marked as an
-    /// unliked recommendation; None if nothing worked. Only ❤ tracks seed, so taste does not drift rec -> rec.
+    /// One new song similar to the last 3 own tracks of `seeds` (the queue around the current track, most recent
+    /// last), fetched and marked as a recommendation; None if nothing worked. Recs and ✕ tracks never seed,
+    /// so taste does not drift rec -> rec; a playing playlist thus seeds its own recommendations.
     pub async fn next(&mut self, tg: &Tg, store: &Store, seeds: &[Track]) -> Result<Option<Track>> {
-        let own: Vec<&Track> = seeds.iter().filter(|t| t.liked).collect();
+        let own: Vec<&Track> = seeds.iter().filter(|t| !t.rec && !t.disliked).collect();
         let seeds = &own[own.len().saturating_sub(3)..];
         let key = crate::keys::lastfm().ok_or_else(|| anyhow!("no Last.fm key: build with LASTFM_API_KEY"))?;
         let mut bots = sources(tg, store).await?;
@@ -183,7 +184,7 @@ impl Recs {
                         Ok(Some(t)) => {
                             store.mark_rec(t.document_id).await?;
                             self.misses.remove(chat);
-                            return Ok(Some(Track { liked: false, rec: true, ..t }));
+                            return Ok(Some(Track { rec: true, ..t }));
                         }
                         _ => *self.misses.entry(*chat).or_default() += 1,
                     }

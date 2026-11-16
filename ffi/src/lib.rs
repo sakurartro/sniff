@@ -1,6 +1,6 @@
 //! Kotlin-facing API (UniFFI). Thin wrapper over sniff-core; one `App` per process.
 use std::{collections::HashMap, path::PathBuf, sync::{Arc, Mutex}};
-use sniff_core::{artists, keys::ApiKeys, recs::{Cand, Recs}, store::{Store, Track}, stream::{Mode, Streams}, tg::{Hit, LoginToken, PasswordToken, SignIn, Tg}};
+use sniff_core::{artists, keys::ApiKeys, recs::{Cand, Recs}, store::{Store, Track, LIKED}, stream::{Mode, Streams}, tg::{Hit, LoginToken, PasswordToken, SignIn, Tg}};
 use tokio::sync::Mutex as AsyncMutex;
 
 uniffi::setup_scaffolding!();
@@ -47,10 +47,21 @@ pub struct TrackInfo {
     pub message_id: i32,
     /// Individual artists of `performer` (feats split, spelling unified); empty when untagged.
     pub artists: Vec<String>,
-    /// ❤: in the library
+    /// ❤: in «Мне нравится»
     pub liked: bool,
-    /// came from recommendations (✨)
+    /// a recommendation not adopted into a playlist yet (✨)
     pub rec: bool,
+    /// ✕ «Не нравится»
+    pub disliked: bool,
+}
+
+#[derive(uniffi::Record)]
+pub struct PlaylistInfo {
+    pub id: i64,
+    pub name: String,
+    /// custom cover path, None = collage
+    pub cover: Option<String>,
+    pub count: u32,
 }
 
 /// A song a source bot offers in search, not downloaded yet.
@@ -76,7 +87,7 @@ pub struct SyncStep {
 
 fn info(t: Track, names: &HashMap<String, String>) -> TrackInfo {
     let artists = artists::split(&t.performer).into_iter().map(|a| names.get(&artists::key(&a)).cloned().unwrap_or(a)).collect();
-    TrackInfo { document_id: t.document_id, title: t.title, performer: t.performer, duration: t.duration, size: t.size, chat_id: t.chat_id, message_id: t.message_id, artists, liked: t.liked, rec: t.rec }
+    TrackInfo { document_id: t.document_id, title: t.title, performer: t.performer, duration: t.duration, size: t.size, chat_id: t.chat_id, message_id: t.message_id, artists, liked: t.liked, rec: t.rec, disliked: t.disliked }
 }
 
 #[derive(uniffi::Object)]
@@ -199,9 +210,53 @@ impl App {
         Ok(())
     }
 
-    /// ❤ on/off: liked tracks are the library and seed recommendations. Never touches Telegram.
+    /// ❤ on/off: the track in or out of «Мне нравится». Never touches Telegram.
     pub async fn set_liked(&self, document_id: i64, liked: bool) -> R<()> {
-        self.store.set_liked(document_id, liked).await.map_err(e)
+        self.store.set_in_playlist(LIKED, document_id, liked).await.map_err(e)
+    }
+
+    /// ✕ «Не нравится»: out of the library, recommendations and shuffle (playlists keep it). Never touches Telegram.
+    pub async fn set_disliked(&self, document_id: i64, disliked: bool) -> R<()> {
+        self.store.set_disliked(document_id, disliked).await.map_err(e)
+    }
+
+    /// «Мне нравится» (id 1) first.
+    pub async fn playlists(&self) -> R<Vec<PlaylistInfo>> {
+        Ok(self.store.playlists().await.map_err(e)?.into_iter().map(|p| PlaylistInfo { id: p.id, name: p.name, cover: p.cover, count: p.count }).collect())
+    }
+
+    pub async fn playlist_tracks(&self, id: i64) -> R<Vec<TrackInfo>> {
+        let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
+        Ok(self.store.playlist_tracks(id).await.map_err(e)?.into_iter().map(|t| info(t, &names)).collect())
+    }
+
+    pub async fn create_playlist(&self, name: String) -> R<i64> {
+        self.store.create_playlist(name.trim()).await.map_err(e)
+    }
+
+    pub async fn rename_playlist(&self, id: i64, name: String) -> R<()> {
+        self.store.rename_playlist(id, name.trim()).await.map_err(e)
+    }
+
+    pub async fn set_playlist_cover(&self, id: i64, cover: Option<String>) -> R<()> {
+        self.store.set_playlist_cover(id, cover).await.map_err(e)
+    }
+
+    pub async fn delete_playlist(&self, id: i64) -> R<()> {
+        self.store.delete_playlist(id).await.map_err(e)
+    }
+
+    pub async fn set_in_playlist(&self, id: i64, document_id: i64, on: bool) -> R<()> {
+        self.store.set_in_playlist(id, document_id, on).await.map_err(e)
+    }
+
+    pub async fn playlists_with(&self, document_id: i64) -> R<Vec<i64>> {
+        self.store.playlists_with(document_id).await.map_err(e)
+    }
+
+    /// Order after editing; tracks left out are removed from the playlist.
+    pub async fn set_playlist_order(&self, id: i64, document_ids: Vec<i64>) -> R<()> {
+        self.store.set_playlist_order(id, &document_ids).await.map_err(e)
     }
 
     /// Is any selected chat a usable source bot?
@@ -232,7 +287,7 @@ impl App {
             .collect())
     }
 
-    /// Fetches a search hit from the source bots into the db, not liked (❤ adds it to the library). Slow.
+    /// Fetches a search hit from the source bots into the db (a playlist adds it to the library). Slow.
     pub async fn bot_get(&self, hit: BotHit) -> R<Option<TrackInfo>> {
         let c = Cand { artist: hit.artist, title: hit.title, duration: hit.duration };
         let h = Hit { cand: c.clone(), query_id: hit.query_id, result_id: hit.result_id, payload: Some(hit.payload).filter(|p| !p.is_empty()) };
@@ -247,9 +302,10 @@ impl App {
             }
         }
         let Some(t) = got else { return Ok(None) };
-        self.store.set_liked(t.document_id, false).await.map_err(e)?;
+        // the fresh Track from the bot does not know about ❤ / ✕ set earlier
+        let t = self.store.track(t.document_id).await.map_err(e)?.unwrap_or(t);
         let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
-        Ok(Some(info(Track { liked: false, ..t }, &names)))
+        Ok(Some(info(t, &names)))
     }
 
     /// Starts downloading the track (`foreground` = it is the one playing, else it is a prefetch) and returns its size in bytes.
