@@ -117,8 +117,7 @@ impl Store {
     }
 
     pub async fn selected_chats(&self) -> Result<Vec<i64>> {
-        // source bot chats are not synced: what they delivered is not the library
-        let mut rows = self.0.query("SELECT id FROM chats WHERE selected=1 AND source=0", ()).await?;
+        let mut rows = self.0.query("SELECT id FROM chats WHERE selected=1", ()).await?;
         let mut out = vec![];
         while let Some(r) = rows.next().await? {
             out.push(r.get(0)?);
@@ -390,7 +389,7 @@ impl Store {
             return self
                 .list(
                     &format!(
-                        "SELECT {COLS} FROM tracks t WHERE t.disliked=0 AND EXISTS(SELECT 1 FROM playlist_tracks p WHERE p.document_id=t.document_id) OR (t.disliked=0 AND t.rec=0 AND t.chat_id IN (SELECT id FROM chats WHERE selected=1 AND source=0)) ORDER BY t.date DESC, t.message_id DESC"
+                        "SELECT {COLS} FROM tracks t WHERE t.disliked=0 AND EXISTS(SELECT 1 FROM playlist_tracks p WHERE p.document_id=t.document_id) OR (t.disliked=0 AND t.rec=0 AND t.chat_id IN (SELECT id FROM chats WHERE selected=1)) ORDER BY t.date DESC, t.message_id DESC"
                     ),
                     (),
                 )
@@ -473,11 +472,11 @@ mod tests {
         s.set_selected(2, true).await.unwrap();
         s.set_bot(2, "inline").await.unwrap();
         s.set_source(2).await.unwrap();
-        assert_eq!(s.selected_chats().await.unwrap(), vec![1]); // a source bot chat is not synced
+        assert_eq!(s.selected_chats().await.unwrap(), vec![1, 2]); // a bot chat is synced like any chat
         s.add_track(&t(13, "Own download", 2)).await.unwrap();
-        assert_eq!(s.tracks("").await.unwrap().len(), 1); // nor is it the library
+        assert_eq!(s.tracks("").await.unwrap().len(), 2); // and its tracks are library
         assert!(s.add_fetched(&t(12, "Fetched", 2)).await.unwrap());
-        assert_eq!(s.tracks("").await.unwrap().len(), 1);
+        assert_eq!(s.tracks("").await.unwrap().len(), 2); // what the app fetched itself is not
         // the same document forwarded elsewhere is one more place
         assert!(!s.add_track(&t(10, "Hello World", 5)).await.unwrap());
         let mut places = s.places(10).await.unwrap();
@@ -487,7 +486,7 @@ mod tests {
         // a fetch of a document you already own must not hide it from the library
         assert!(!s.add_fetched(&t(13, "Own download", 2)).await.unwrap());
         assert!(!s.track(13).await.unwrap().unwrap().rec);
-        assert_eq!(s.tracks("").await.unwrap().len(), 1);
+        assert_eq!(s.tracks("").await.unwrap().len(), 2);
         // ❤ = «Мне нравится»: adopts the rec, newest on top, no duplicates
         s.set_in_playlist(LIKED, 11, true).await.unwrap();
         s.set_in_playlist(LIKED, 10, true).await.unwrap();
@@ -495,14 +494,14 @@ mod tests {
         let t11 = s.track(11).await.unwrap().unwrap();
         assert!(t11.liked && !t11.rec);
         assert_eq!(ids(s.playlist_tracks(LIKED).await.unwrap()), vec![10, 11]);
-        assert_eq!(s.tracks("").await.unwrap().len(), 2);
+        assert_eq!(s.tracks("").await.unwrap().len(), 3);
         // own playlists append at the end, keep an edited order, and are deletable
         let p = s.create_playlist("Mix").await.unwrap();
         for d in [12, 10] {
             s.set_in_playlist(p, d, true).await.unwrap();
         }
         assert_eq!(ids(s.playlist_tracks(p).await.unwrap()), vec![12, 10]);
-        assert_eq!(s.tracks("").await.unwrap().len(), 3); // the fetched track is in a playlist now
+        assert_eq!(s.tracks("").await.unwrap().len(), 4); // the fetched track is in a playlist now
         assert_eq!(s.playlists_with(10).await.unwrap(), vec![LIKED, p]);
         s.set_playlist_order(p, &[10, 12]).await.unwrap();
         assert_eq!(ids(s.playlist_tracks(p).await.unwrap()), vec![10, 12]);
