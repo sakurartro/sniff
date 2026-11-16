@@ -510,7 +510,6 @@ fun NowPlaying(vm: Vm, close: () -> Unit, goto: (String) -> Unit) {
             Ico(if (vm.playing) "pause" else "play", 64.dp, MaterialTheme.colorScheme.onBackground, Modifier.clickable { vm.toggle() })
             Ico("next", 44.dp, MaterialTheme.colorScheme.onBackground, Modifier.clickable { vm.next() })
             Ico(if (vm.repeat == 2) "repeat1" else "repeat", 28.dp, if (vm.repeat > 0) on else off, Modifier.clickable { vm.cycleRepeat() })
-            Ico("spark", 28.dp, if (vm.recsOn) on else off, Modifier.clickable { vm.toggleRecs() })
         }
         var showQueue by remember { mutableStateOf(false) }
         Spacer(Modifier.weight(1f))
@@ -520,6 +519,8 @@ fun NowPlaying(vm: Vm, close: () -> Unit, goto: (String) -> Unit) {
                 TextButton({ vm.restore() }) { Text("Вернуть") }
             }
             Spacer(Modifier.weight(1f))
+            Ico("spark", 28.dp, if (vm.recsOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, Modifier.clickable { vm.toggleRecs() })
+            Spacer(Modifier.width(20.dp))
             Ico("queue", 28.dp, MaterialTheme.colorScheme.onBackground, Modifier.clickable { showQueue = true })
         }
         if (showQueue) QueueSheet(vm) { showQueue = false }
