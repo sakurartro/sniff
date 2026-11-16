@@ -38,6 +38,15 @@ object Shared {
         .build().also { exo = it }
 }
 
+/** The session is exported (the system and Bluetooth need it): other apps must not read the track or drive the player. */
+@OptIn(UnstableApi::class)
+private object OnlyOurs : MediaSession.Callback {
+    override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult =
+        if (controller.packageName == "app.sniff" || controller.isTrusted || session.isMediaNotificationController(controller))
+            MediaSession.ConnectionResult.AcceptedResultBuilder(session).build()
+        else MediaSession.ConnectionResult.reject()
+}
+
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
 
@@ -51,7 +60,7 @@ class PlaybackService : MediaSessionService() {
             override fun seekToNext() { Shared.onNext?.invoke() }
             override fun seekToPrevious() { Shared.onPrev?.invoke() }
         }
-        session = MediaSession.Builder(this, p).build().also { addSession(it) }
+        session = MediaSession.Builder(this, p).setCallback(OnlyOurs).build().also { addSession(it) }
     }
 
     override fun onGetSession(info: MediaSession.ControllerInfo) = session

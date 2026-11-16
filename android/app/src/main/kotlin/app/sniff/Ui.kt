@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -76,6 +77,11 @@ fun Root(vm: Vm) {
         Box(Modifier.fillMaxSize()) {
             when {
                 !vm.ready -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = MaterialTheme.colorScheme.primary) }
+                vm.sessionDead -> Column(Modifier.fillMaxSize().systemBarsPadding().padding(28.dp), Arrangement.Center, Alignment.CenterHorizontally) {
+                    Text("Сессия Telegram завершена", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Text("Её закрыли в другом приложении или Telegram. Треки и плейлисты сохранены, нужно войти заново.", color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center, modifier = Modifier.padding(vertical = 12.dp))
+                    Primary("Войти заново", true) { vm.relogin() }
+                }
                 !vm.authorized -> LoginScreen(vm)
                 else -> MainScreen(vm)
             }
@@ -175,6 +181,14 @@ fun MainScreen(vm: Vm) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var full by rememberSaveable { mutableStateOf(false) }
     var stack by rememberSaveable { mutableStateOf("") } // routes opened inside the current tab, SEP-joined
+    // first login: nothing is selected yet, so go straight to choosing chats instead of an empty library
+    var asked by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (asked) return@LaunchedEffect
+        val all = snapshotFlow { vm.chats }.first { it.isNotEmpty() }
+        asked = true
+        if (all.none { it.selected }) { tab = 3; stack = "manage" }
+    }
     val route = stack.substringAfterLast(SEP)
     val push = { r: String -> stack = if (stack.isEmpty()) r else stack + SEP + r }
     val pop = { stack = if (SEP in stack) stack.substringBeforeLast(SEP) else "" }
@@ -437,8 +451,15 @@ fun SearchTab(vm: Vm, push: (String) -> Unit) {
 }
 @Composable
 fun ChatsTab(vm: Vm) {
+    var q by rememberSaveable { mutableStateOf("") }
+    // chats selected when the screen opened go first; the order does not jump while toggling
+    val pinned = remember { vm.chats.filter { it.selected }.map { it.id }.toSet() }
+    val shown = remember(vm.chats, q, pinned) {
+        vm.chats.filter { it.title.contains(q.trim(), ignoreCase = true) }.sortedWith(compareByDescending<Chat> { it.id in pinned }.thenBy { it.title.lowercase() })
+    }
     LazyColumn(Modifier.fillMaxSize()) {
         item { LargeTitle("Чаты") }
+        item { Box(Modifier.padding(horizontal = 20.dp)) { Field(q, { q = it }, "Найти чат", KeyboardType.Text) } }
         item {
             Column(Modifier.padding(horizontal = 20.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -449,7 +470,7 @@ fun ChatsTab(vm: Vm) {
                 if (vm.busy) LinearProgressIndicator(Modifier.padding(top = 8.dp).fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
             }
         }
-        itemsIndexed(vm.chats, key = { _, c -> c.id }) { _, c -> ChatRow(c) { vm.toggle(c) } }
+        itemsIndexed(shown, key = { _, c -> c.id }) { _, c -> ChatRow(c) { vm.toggle(c) } }
     }
 }
 

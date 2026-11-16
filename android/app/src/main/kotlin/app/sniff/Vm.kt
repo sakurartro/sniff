@@ -120,7 +120,33 @@ class Vm(a: Application) : AndroidViewModel(a) {
         }
     }
 
-    private fun msg(e: Exception) = (e as? FfiException.Msg)?.msg ?: e.toString()
+    /** Telegram revoked the session (or we logged out): only a fresh login helps. */
+    var sessionDead by mutableStateOf(false)
+        private set
+
+    private fun msg(e: Exception): String {
+        val m = (e as? FfiException.Msg)?.msg ?: e.toString()
+        if (m.contains("Сессия Telegram завершена")) sessionDead = true
+        return m
+    }
+
+    /** Ends the session in Telegram and on the phone; chats of the old account are forgotten, tracks and playlists stay. */
+    fun logout() {
+        viewModelScope.launch(Dispatchers.Default) {
+            try { core?.logOut() } catch (_: Exception) {} // revoked already: wipe anyway
+            wipeSession()
+        }
+    }
+
+    fun relogin() { viewModelScope.launch(Dispatchers.Default) { wipeSession() } }
+
+    /** Drops the session files and restarts the process: the session is open in Rust and cannot be swapped in place. */
+    private suspend fun wipeSession() {
+        withContext(Dispatchers.Main) { player.stop(); player.clearMediaItems() }
+        getApplication<Application>().filesDir.resolve("tg").listFiles()?.filter { it.name.startsWith("tg.session") }?.forEach { it.delete() }
+        prefs.edit().putBoolean("authorized", false).commit()
+        android.os.Process.killProcess(android.os.Process.myPid())
+    }
 
     private val running = AtomicInteger()
 

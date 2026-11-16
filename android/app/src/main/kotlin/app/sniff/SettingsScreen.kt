@@ -42,6 +42,16 @@ fun SettingsScreen(vm: Vm, selected: AppTheme, onSelect: (AppTheme) -> Unit, mod
                     Text("Чаты", fontSize = 16.sp, modifier = Modifier.weight(1f))
                     Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 18.sp)
                 }
+                HorizontalDivider(Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                var out by remember { mutableStateOf(false) }
+                Text("Выйти из аккаунта", fontSize = 16.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.fillMaxWidth().clickable { out = true }.padding(horizontal = 16.dp, vertical = 14.dp))
+                if (out) AlertDialog(
+                    onDismissRequest = { out = false },
+                    title = { Text("Выйти из аккаунта?") },
+                    text = { Text("Сессия на этом телефоне завершится и приложение закроется. Треки, плейлисты и кэш сохранятся, в Telegram ничего не удаляется.") },
+                    confirmButton = { TextButton({ out = false; vm.logout() }) { Text("Выйти", color = MaterialTheme.colorScheme.error) } },
+                    dismissButton = { TextButton({ out = false }) { Text("Отмена") } },
+                )
             }
             RecsSection(vm)
             CacheSection(vm)
