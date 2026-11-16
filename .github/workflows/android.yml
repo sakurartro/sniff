@@ -58,13 +58,13 @@ jobs:
       - uses: actions/download-artifact@v5
         with: { name: sniff }
       - run: |
-          mv app-arm64-v8a-release.apk sniff.apk
+          mv app-arm64-v8a-release.apk sniff-64bit.apk
           mv app-armeabi-v7a-release.apk sniff-32bit.apk
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" sniff.apk sniff-32bit.apk --repo "${{ github.repository }}" --draft --verify-tag --title "sniff ${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" sniff-64bit.apk sniff-32bit.apk --repo "${{ github.repository }}" --draft --verify-tag --title "sniff ${{ github.ref_name }}" --generate-notes
   attach:
-    # manual run with attach_to=<tag>: adds the 32-bit APK to a release that already exists (no new release, sniff.apk is left alone)
+    # manual run with attach_to=<tag>: adds the 32-bit APK to a release that already exists (no new release, the 64-bit APK is left alone)
     if: github.event_name == 'workflow_dispatch' && inputs.attach_to != ''
     needs: apk
     runs-on: ubuntu-latest
