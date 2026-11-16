@@ -6,6 +6,11 @@ on:
     # a version tag (1.0.0) ships a draft release; branch pushes only build the artifact
     tags: ['*.*.*']
   workflow_dispatch:
+    inputs:
+      attach_to:
+        description: 'Tag of an already existing release to attach sniff-32bit.apk to (e.g. 1.0.0); empty = just build'
+        required: false
+        default: ''
 permissions: { contents: read }
 concurrency: { group: "apk-${{ github.ref }}", cancel-in-progress: true }
 jobs:
@@ -16,7 +21,7 @@ jobs:
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: 17 }
       - uses: dtolnay/rust-toolchain@stable
-        with: { targets: aarch64-linux-android }
+        with: { targets: aarch64-linux-android,armv7-linux-androideabi }
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p sniff-core
       - run: cargo install cargo-ndk --locked
@@ -25,7 +30,7 @@ jobs:
           SNIFF_API_ID: ${{ secrets.TGKIKU_API_ID }}
           SNIFF_API_HASH: ${{ secrets.TGKIKU_API_HASH }}
           LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
-        run: cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build --release -p sniff-ffi
+        run: cargo ndk -t arm64-v8a -t armeabi-v7a -o android/app/src/main/jniLibs build --release -p sniff-ffi
       - name: Kotlin bindings
         run: cargo run -p uniffi-bindgen -- generate --library target/aarch64-linux-android/release/libsniff_ffi.so --language kotlin --no-format --out-dir android/app/src/main/java
       - uses: gradle/actions/setup-gradle@v5
@@ -41,10 +46,10 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: sniff
-          path: android/app/build/outputs/apk/release/app-release.apk
+          path: android/app/build/outputs/apk/release/*.apk
           retention-days: 14
   release:
-    # tags only; the APK built above is attached to a DRAFT release that is published by hand on GitHub
+    # tags only; the APKs built above are attached to a DRAFT release that is published by hand on GitHub
     if: github.ref_type == 'tag'
     needs: apk
     runs-on: ubuntu-latest
@@ -52,7 +57,22 @@ jobs:
     steps:
       - uses: actions/download-artifact@v5
         with: { name: sniff }
-      - run: mv app-release.apk sniff.apk
+      - run: |
+          mv app-arm64-v8a-release.apk sniff.apk
+          mv app-armeabi-v7a-release.apk sniff-32bit.apk
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" sniff.apk --repo "${{ github.repository }}" --draft --verify-tag --title "sniff ${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" sniff.apk sniff-32bit.apk --repo "${{ github.repository }}" --draft --verify-tag --title "sniff ${{ github.ref_name }}" --generate-notes
+  attach:
+    # manual run with attach_to=<tag>: adds the 32-bit APK to a release that already exists (no new release, sniff.apk is left alone)
+    if: github.event_name == 'workflow_dispatch' && inputs.attach_to != ''
+    needs: apk
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/download-artifact@v5
+        with: { name: sniff }
+      - run: mv app-armeabi-v7a-release.apk sniff-32bit.apk
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.attach_to }}" sniff-32bit.apk --repo "${{ github.repository }}" --clobber

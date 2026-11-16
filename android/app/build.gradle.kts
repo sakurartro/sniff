@@ -13,7 +13,6 @@ android {
         targetSdk = 35
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionName = "1.0.0"
-        ndk { abiFilters += "arm64-v8a" }
     }
     signingConfigs {
         // CI decodes the key from GitHub Secrets to android/app/release.jks; without it we fall back to the default debug key.
@@ -28,6 +27,15 @@ android {
         getByName("release") {
             signingConfig = signingConfigs.findByName("ci") ?: signingConfigs.getByName("debug")
             isMinifyEnabled = false // R8 would need keep rules for JNA/UniFFI; not worth it for now
+        }
+    }
+    // two APKs: arm64-v8a and armeabi-v7a (32-bit systems, e.g. Redmi 9A ships a 32-bit userspace on a 64-bit CPU)
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
         }
     }
     lint { checkReleaseBuilds = false; abortOnError = false }

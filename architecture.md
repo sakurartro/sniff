@@ -67,7 +67,7 @@ Last.fm (`track.getSimilar`, запасной путь через артисто
 - Ui.kt / Playlists.kt / SettingsScreen.kt — Compose-экраны.
 
 ## Сборка
-GitHub Actions (`.github/workflows/android.yml`): `cargo ndk` → `.so` (arm64-v8a), uniffi → Kotlin, `gradle assembleDebug`, артефакт APK. Ключи — секреты `SNIFF_API_ID/HASH`.
+GitHub Actions (`.github/workflows/android.yml`): `cargo ndk` → `.so` (arm64-v8a + armeabi-v7a, два APK через abi splits), uniffi → Kotlin, `gradle assembleDebug`, артефакт APK. Ключи — секреты `SNIFF_API_ID/HASH`.
 
 ## Поток воспроизведения
 ```
