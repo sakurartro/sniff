@@ -19,9 +19,9 @@
 
 ## Скачать
 
-[Скачать sniff.apk](https://github.com/sakurartro/sniff/releases/latest)
+[Скачать sniff-64bit.apk](https://github.com/sakurartro/sniff/releases/latest)
 
-Нужен Android 8.0 или новее, процессор arm64 (почти все телефоны последних лет). APK ставится вручную: при установке Android попросит разрешить установку из неизвестных источников.
+Нужен Android 8.0 или новее. `sniff-64bit.apk` — для 64-битных телефонов (arm64, почти все последние). Если пишет «Приложение не установлено» (например, Redmi 9A/9C с 32-битной системой) — берите `sniff-32bit.apk` из того же релиза. APK ставится вручную: при установке Android попросит разрешить установку из неизвестных источников.
 
 ## Как это работает?
 
@@ -57,7 +57,7 @@
 Нужны ключи Telegram (получить на https://my.telegram.org) и, для рекомендаций, ключ Last.fm. Они вшиваются в сборку через переменные окружения:
 
     SNIFF_API_ID=123 SNIFF_API_HASH=abc LASTFM_API_KEY=xyz \
-      cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build --release -p sniff-ffi
+      cargo ndk -t arm64-v8a -t armeabi-v7a -o android/app/src/main/jniLibs build --release -p sniff-ffi
 
 Дальше генерируются Kotlin-биндинги и собирается APK (`gradle -p android assembleRelease`). Точные шаги лежат в [`.github/workflows/android.yml`](.github/workflows/android.yml), устройство проекта описано в [`architecture.md`](architecture.md).
 
