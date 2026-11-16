@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -24,6 +25,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.KeyboardType
 
 @Composable
 fun SettingsScreen(vm: Vm, selected: AppTheme, onSelect: (AppTheme) -> Unit, mode: Int, onMode: (Int) -> Unit, openChats: () -> Unit) {
@@ -37,6 +43,7 @@ fun SettingsScreen(vm: Vm, selected: AppTheme, onSelect: (AppTheme) -> Unit, mod
                 }
             }
             RecsSection(vm)
+            CacheSection(vm)
             SettingsSection("Оформление") {
                 Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf(1 to "Светлый", 2 to "Тёмный").forEach { (m, s) ->
@@ -94,6 +101,39 @@ private fun RecsSection(vm: Vm) {
             )
             TextButton({ vm.connectBot(own); own = "" }, enabled = own.isNotBlank() && !vm.busy) { Text("Подключить") }
         }
+    }
+}
+
+private fun gb(v: Float) = if (v % 1f == 0f) v.toInt().toString() else "%.1f".format(v)
+
+@Composable
+private fun CacheSection(vm: Vm) {
+    SettingsSection("Кэш") {
+        var slide by remember { mutableFloatStateOf(vm.cacheGb) }
+        var text by remember { mutableStateOf(gb(vm.cacheGb)) }
+        val focus = LocalFocusManager.current
+        LaunchedEffect(Unit) { vm.setCacheLimit(vm.cacheGb) } // refreshes «занято»
+        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Максимум, ГБ", fontSize = 16.sp, modifier = Modifier.weight(1f))
+            TextField(
+                text, { text = it }, Modifier.width(100.dp), singleLine = true,
+                // applied on Done only: per keystroke, typing "10" would first evict down to 1 GB
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = {
+                    text.replace(',', '.').toFloatOrNull()?.takeIf { it >= 0.1f }?.let { slide = it; vm.setCacheLimit(it) }
+                    text = gb(vm.cacheGb); focus.clearFocus()
+                }),
+                colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent),
+            )
+        }
+        Slider(
+            slide.coerceIn(0.5f, 32f), { slide = Math.round(it * 2) / 2f; text = gb(slide) }, Modifier.padding(horizontal = 16.dp),
+            valueRange = 0.5f..32f, steps = 62, onValueChangeFinished = { vm.setCacheLimit(slide) },
+        )
+        Text(
+            "Занято ${"%.2f".format(vm.cacheUsed / (1 shl 30).toFloat())} из ${gb(vm.cacheGb)} ГБ. Когда места не хватает, удаляются давно не слушанные треки.",
+            fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+        )
     }
 }
 

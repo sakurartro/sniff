@@ -48,6 +48,15 @@ class Vm(a: Application) : AndroidViewModel(a) {
     var mode by mutableIntStateOf(prefs.getInt("mode", 2)) // 1 light, 2 dark
         private set
     fun setThemeMode(m: Int) { mode = m; prefs.edit().putInt("mode", m).apply() }
+    var cacheGb by mutableFloatStateOf(prefs.getFloat("cacheGb", 2f))
+        private set
+    var cacheUsed by mutableLongStateOf(0L)
+        private set
+    /** Saves the audio cache limit and lets core evict down to it. */
+    fun setCacheLimit(gb: Float) {
+        cacheGb = gb; prefs.edit().putFloat("cacheGb", gb).apply()
+        viewModelScope.launch { cacheUsed = core!!.setCacheLimit((gb * (1 shl 30)).toLong().toULong()).toLong() }
+    }
 
     var query by mutableStateOf("")
     var recent by mutableStateOf(prefs.getString("recent", "")!!.split(',').mapNotNull { it.toLongOrNull() })
@@ -89,6 +98,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
             val c = openApp(a.filesDir.resolve("tg").path, a.cacheDir.resolve("tracks").path)
             core = c; Shared.core = c
             Covers.core = c; Covers.tracksDir = a.cacheDir.resolve("tracks")
+            setCacheLimit(cacheGb)
             authorized = c.isAuthorized()
             ready = true
             if (authorized) loadAll()

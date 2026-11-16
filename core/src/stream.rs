@@ -9,7 +9,7 @@ use std::{
     fs::{File, OpenOptions},
     os::unix::fs::FileExt,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex},
     time::Duration,
 };
 use tokio::sync::Notify;
@@ -17,7 +17,6 @@ use tokio::sync::Notify;
 const CH: u64 = 512 * 1024;
 const FG_WORKERS: usize = 4;
 const RETRIES: u32 = 6; // pauses 1+2+4+8+16+32 s, then the stream fails
-const CACHE_LIMIT: u64 = 2 << 30;
 
 #[derive(Clone, Copy)]
 pub enum Mode {
@@ -65,6 +64,7 @@ pub struct Streams {
     dir: PathBuf,
     m: Mutex<M>,
     sched: Notify,
+    limit: AtomicU64, // max bytes of finished `.audio` files
 }
 
 fn pack(done: &[bool]) -> Vec<u8> {
@@ -107,7 +107,7 @@ impl Dl {
 
 impl Streams {
     pub fn new(tg: Arc<Tg>, store: Arc<Store>, dir: PathBuf) -> Arc<Self> {
-        Arc::new(Self { tg, store, dir, m: Default::default(), sched: Notify::new() })
+        Arc::new(Self { tg, store, dir, m: Default::default(), sched: Notify::new(), limit: AtomicU64::new(2 << 30) })
     }
 
     fn audio(&self, id: i64) -> PathBuf {
@@ -366,10 +366,18 @@ impl Streams {
         }
     }
 
-    /// Deletes least recently played `.audio` files until the cache fits `CACHE_LIMIT`; active tracks are kept.
+    /// Sets the cache limit and evicts down to it; returns the bytes the cache now holds.
+    pub async fn set_limit(&self, bytes: u64) -> u64 {
+        self.limit.store(bytes, Ordering::Relaxed);
+        self.evict().await
+    }
+
+    /// Deletes least recently played `.audio` files until the cache fits the limit; active tracks are kept.
+    /// Returns the size left.
     /// shortcut: abandoned `.part`/`.map` files are not counted or evicted, add it if they pile up.
-    async fn evict(&self) {
-        let Ok(rd) = std::fs::read_dir(&self.dir) else { return };
+    async fn evict(&self) -> u64 {
+        let Ok(rd) = std::fs::read_dir(&self.dir) else { return 0 };
+        let limit = self.limit.load(Ordering::Relaxed);
         let played = self.store.last_played().await.unwrap_or_default();
         let keep: HashSet<i64> = {
             let m = self.m.lock().unwrap();
@@ -386,13 +394,14 @@ impl Streams {
         let mut total: u64 = files.iter().map(|f| f.2).sum();
         files.sort();
         for (_, id, len, p) in files {
-            if total <= CACHE_LIMIT {
+            if total <= limit {
                 break;
             }
             if !keep.contains(&id) && std::fs::remove_file(p).is_ok() {
                 total -= len;
             }
         }
+        total
     }
 }
 

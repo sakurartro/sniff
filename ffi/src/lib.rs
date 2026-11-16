@@ -328,6 +328,11 @@ impl App {
         Ok(self.streams.finished(document_id).await.map_err(e)?.to_string_lossy().into_owned())
     }
 
+    /// Sets the max size of downloaded audio (evicting least recently played now); returns bytes in use.
+    pub async fn set_cache_limit(&self, bytes: u64) -> u64 {
+        self.streams.set_limit(bytes).await
+    }
+
     /// Telegram's thumbnail for the track, saved as `<cache>/covers/<id>.jpg`; None if it has none.
     pub async fn cover(&self, document_id: i64) -> R<Option<String>> {
         let dir = self.cache.join("covers");
