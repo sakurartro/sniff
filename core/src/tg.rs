@@ -6,7 +6,10 @@ use grammers_client::{media::{Media, PhotoSize}, message::Message, peer::Peer, t
 use grammers_mtsender::{ConnectionParams, SenderPool};
 use grammers_session::{storages::SqliteSession, types::PeerId, Session};
 use grammers_mtsender::SenderPoolFatHandle;
-use std::{collections::HashMap, path::Path, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::HashMap, path::Path, sync::{Arc, Mutex}, time::{Duration, Instant}};
+
+/// How long a chat missing from the dialogs stays "missing" before the next scan.
+const MISSING_FOR: Duration = Duration::from_secs(300);
 
 pub use grammers_client::client::LoginToken;
 pub use grammers_client::client::PasswordToken;
@@ -22,6 +25,12 @@ pub struct Tg {
     session: Arc<SqliteSession>,
     handle: SenderPoolFatHandle,
     peers: Mutex<HashMap<i64, grammers_session::types::PeerRef>>,
+    /// chats a dialog scan did not find, with the time: no rescanning (a full GetDialogs walk each) for a while
+    missing: Mutex<HashMap<i64, Instant>>,
+    /// one dialog scan at a time; whoever waits finds the result in `peers`
+    scan: tokio::sync::Mutex<()>,
+    /// one bot conversation at a time per chat: replies are matched by "first audio after my request"
+    chat_locks: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
     _pool: tokio::task::JoinHandle<()>,
 }
 
@@ -45,7 +54,7 @@ impl Tg {
         let pool = tokio::spawn(async move {
             let _ = runner.run().await;
         });
-        Ok(Self { client, keys, session, handle, peers: Default::default(), _pool: pool })
+        Ok(Self { client, keys, session, handle, peers: Default::default(), missing: Default::default(), scan: Default::default(), chat_locks: Default::default(), _pool: pool })
     }
 
     pub async fn is_authorized(&self) -> Result<bool> {
@@ -94,20 +103,26 @@ impl Tg {
                     let old = self.session.home_dc_id()?;
                     self.handle.disconnect_from_dc(old);
                     self.session.set_home_dc_id(m.dc_id).await?;
-                    if let LT::Success(_) = self.client.invoke(&tl::functions::auth::ImportLoginToken { token: m.token }).await? {
-                        return Ok(SignIn::Done);
+                    match self.client.invoke(&tl::functions::auth::ImportLoginToken { token: m.token }).await {
+                        Ok(LT::Success(_)) => return Ok(SignIn::Done),
+                        Ok(_) => {}
+                        // 2FA is asked on the new DC too
+                        Err(grammers_client::InvocationError::Rpc(e)) if e.name == "SESSION_PASSWORD_NEEDED" => return self.password_required().await,
+                        Err(e) => return Err(anyhow!("token login failed: {e}")),
                     }
                 }
                 Ok(LT::Success(_)) => return Ok(SignIn::Done),
-                Err(grammers_client::InvocationError::Rpc(e)) if e.name == "SESSION_PASSWORD_NEEDED" => {
-                    let p = self.client.invoke(&tl::functions::account::GetPassword {}).await?;
-                    let tl::enums::account::Password::Password(p) = p;
-                    return Ok(SignIn::PasswordRequired(PasswordToken::new(p)));
-                }
+                Err(grammers_client::InvocationError::Rpc(e)) if e.name == "SESSION_PASSWORD_NEEDED" => return self.password_required().await,
                 Err(e) => return Err(anyhow!("token login failed: {e}")),
             }
             tokio::time::sleep(Duration::from_secs(3)).await;
         }
+    }
+
+    async fn password_required(&self) -> Result<SignIn> {
+        let p = self.client.invoke(&tl::functions::account::GetPassword {}).await?;
+        let tl::enums::account::Password::Password(p) = p;
+        Ok(SignIn::PasswordRequired(PasswordToken::new(p)))
     }
 
     pub async fn sign_in(&self, token: &LoginToken, code: &str) -> Result<SignIn> {
@@ -118,9 +133,13 @@ impl Tg {
         }
     }
 
-    pub async fn check_password(&self, token: PasswordToken, password: &str) -> Result<()> {
-        self.client.check_password(token, password.as_bytes()).await.map_err(|e| anyhow!("{e}"))?;
-        Ok(())
+    /// Ok(None) = logged in; Ok(Some(token)) = wrong password, the token is good for another try.
+    pub async fn check_password(&self, token: PasswordToken, password: &str) -> Result<Option<PasswordToken>> {
+        match self.client.check_password(token, password.as_bytes()).await {
+            Ok(_) => Ok(None),
+            Err(SignInError::InvalidPassword(t)) => Ok(Some(t)),
+            Err(e) => Err(anyhow!("{e}")),
+        }
     }
 
     /// Refresh the chat list in the store (keeps `selected` flags).
@@ -136,42 +155,82 @@ impl Tg {
     }
 
     /// Scan one backfill page (up to `limit` audio messages, newest to oldest, below the stored cursor).
-    /// Returns (new tracks, reached the end of history).
+    /// Returns (new tracks, reached the end of history). Once the whole history is scanned, every call
+    /// only looks at what was posted above the newest message seen before.
     pub async fn backfill_page(&self, store: &Store, chat_id: i64, limit: usize) -> Result<(usize, bool)> {
         let peer = self.peer_ref(chat_id).await?;
+        if store.done(chat_id).await? {
+            return Ok((self.scan_new(store, &peer, chat_id).await?, true));
+        }
         let cursor = store.cursor(chat_id).await?;
-        let mut it = self
-            .client
-            .search_messages(peer)
-            .filter(grammers_client::tl::enums::MessagesFilter::InputMessagesFilterMusic)
-            .offset_id(cursor);
+        let mut it = self.music(&peer).offset_id(cursor);
         let (mut seen, mut new) = (0, 0);
         while seen < limit {
             let Some(m) = it.next().await? else {
+                store.set_done(chat_id).await?;
+                // chats scanned by older versions never looked above their first scan: do it right now
+                new += self.scan_new(store, &peer, chat_id).await?;
                 return Ok((new, true));
             };
+            if cursor == 0 && seen == 0 {
+                store.set_top(chat_id, m.id()).await?; // newest first: this is the top
+            }
             seen += 1;
-            // cursor moves per message so an interrupted run resumes without rescanning
-            store.set_cursor(chat_id, m.id()).await?;
             if let Some(t) = track_of(&m, chat_id) {
                 new += store.add_track(&t).await? as usize;
             }
-            // shortcut: fixed 300ms spacing, replace with real FloodWait handling when syncing many chats
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            // after the track is stored, so a failed insert is retried instead of skipped
+            store.set_cursor(chat_id, m.id()).await?;
+            // one request fetches 100 messages: pause between requests, not messages
+            if seen % 100 == 0 {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
         }
         Ok((new, false))
+    }
+
+    fn music(&self, peer: &grammers_session::types::PeerRef) -> grammers_client::client::SearchIter {
+        self.client.search_messages(peer.clone()).filter(tl::enums::MessagesFilter::InputMessagesFilterMusic)
+    }
+
+    /// Audio posted since the last scan: walks from the newest message down to the known top.
+    async fn scan_new(&self, store: &Store, peer: &grammers_session::types::PeerRef, chat_id: i64) -> Result<usize> {
+        let mut top = store.top(chat_id).await?;
+        if top == 0 {
+            top = store.newest_track_message(chat_id).await?;
+        }
+        let (mut it, mut new, mut newest, mut n) = (self.music(peer), 0, 0, 0);
+        while let Some(m) = it.next().await? {
+            if m.id() <= top {
+                break;
+            }
+            newest = newest.max(m.id());
+            if let Some(t) = track_of(&m, chat_id) {
+                new += store.add_track(&t).await? as usize;
+            }
+            n += 1;
+            if n % 100 == 0 {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+        // only after the walk: an interrupted one is simply redone (inserts are idempotent)
+        store.set_top(chat_id, newest.max(top)).await?;
+        Ok(new)
     }
 
     /// Source bot kind of a chat: "inline" (results carry audio), "deeplink" (result cards link to `/start <payload>`),
     /// "text" (send a query, get audio or song buttons back), "" (not a bot).
     pub async fn detect_bot(&self, chat_id: i64) -> Result<String> {
         let id = PeerId::from_bot_api_dialog_id(chat_id).ok_or_else(|| anyhow!("bad chat id"))?;
+        let _scan = self.scan.lock().await;
+        self.check_missing(chat_id)?;
         let mut dialogs = self.client.iter_dialogs();
         while let Some(d) = dialogs.next().await? {
             if d.peer().id() == id {
                 return self.bot_kind(d.peer(), d.peer_ref()).await;
             }
         }
+        self.missing.lock().unwrap().insert(chat_id, Instant::now());
         Err(anyhow!("chat {chat_id} not found in dialogs"))
     }
 
@@ -214,6 +273,7 @@ impl Tg {
         store.upsert_chat(chat_id, p.name().unwrap_or(name)).await?;
         store.set_selected(chat_id, true).await?;
         store.set_bot(chat_id, &kind).await?;
+        store.set_source(chat_id).await?;
         if !store.muted(chat_id).await? {
             self.mute_forever(chat_id).await?;
             store.set_muted(chat_id).await?;
@@ -227,12 +287,16 @@ impl Tg {
     /// so automatic searches never ping the user.
     pub async fn fetch(&self, store: &Store, chat_id: i64, kind: &str, c: &Cand) -> Result<Option<Track>> {
         let peer = self.peer_ref(chat_id).await?;
+        let lock = self.chat_lock(chat_id);
+        let _one_at_a_time = lock.lock().await;
         self.quiet(&peer, self.fetch_quiet(store, chat_id, &peer, kind, c)).await
     }
 
     /// Get a song picked from `search_bot` results: the stored result is sent as is, no second search.
     pub async fn fetch_hit(&self, store: &Store, chat_id: i64, h: &Hit) -> Result<Option<Track>> {
         let peer = self.peer_ref(chat_id).await?;
+        let lock = self.chat_lock(chat_id);
+        let _one_at_a_time = lock.lock().await;
         self.quiet(&peer, async {
             let last = self.client.iter_messages(peer.clone()).limit(1).next().await?.map_or(0, |m| m.id());
             match &h.payload {
@@ -244,8 +308,9 @@ impl Tg {
                     self.client.invoke(&req).await?;
                 }
             }
-            let Some(t) = self.wait_audio(&peer, chat_id, last, 45, |_| true).await? else { return Ok(None) };
-            store.add_track(&t).await?;
+            let want = |t: &Track| recs::matches(&h.cand, &t.performer, &t.title, Some(t.duration));
+            let Some(t) = self.wait_audio(&peer, chat_id, last, 45, want, |_| true).await? else { return Ok(None) };
+            store.add_fetched(&t).await?;
             Ok(Some(t))
         })
         .await
@@ -336,6 +401,8 @@ impl Tg {
         let peer = peer.clone();
         let last = self.client.iter_messages(peer.clone()).limit(1).next().await?.map_or(0, |m| m.id());
         let query = format!("{} {}", c.artist, c.title);
+        // whatever arrives must be the song asked for: late answers to earlier requests and bot chatter are skipped
+        let want = |t: &Track| recs::matches(c, &t.performer, &t.title, Some(t.duration));
         let t = match kind {
             "inline" | "deeplink" => {
                 let mut it = self.client.inline_query(peer.clone(), &query);
@@ -358,13 +425,13 @@ impl Tg {
                     _ => r.send(peer.clone()).await?,
                 }
                 // downloader bots fetch the file first; 45s covers a slow Deezer rip
-                self.wait_audio(&peer, chat_id, last, 45, |_| true).await?
+                self.wait_audio(&peer, chat_id, last, 45, want, |_| true).await?
             }
             "text" => {
                 self.client.send_message(peer.clone(), query.as_str()).await?;
                 let mut button = None;
                 let got = self
-                    .wait_audio(&peer, chat_id, last, 15, |m| {
+                    .wait_audio(&peer, chat_id, last, 15, want, |m| {
                         if button.is_none() {
                             button = m.reply_markup().and_then(|k| song_button(&k, c)).map(|d| (m.id(), d));
                         }
@@ -378,22 +445,21 @@ impl Tg {
                         self.client
                             .invoke(&tl::functions::messages::GetBotCallbackAnswer { game: false, peer: (&peer).into(), msg_id, data: Some(data), password: None })
                             .await?;
-                        self.wait_audio(&peer, chat_id, last, 30, |_| true).await?
+                        self.wait_audio(&peer, chat_id, last, 30, want, |_| true).await?
                     }
                     _ => None,
                 }
             }
             _ => return Ok(None),
         };
-        // text bots answer with whatever they found, so check the tags too
-        let Some(t) = t.filter(|t| kind != "text" || recs::matches(c, &t.performer, &t.title, Some(t.duration))) else { return Ok(None) };
-        store.add_track(&t).await?;
+        let Some(t) = t else { return Ok(None) };
+        store.add_fetched(&t).await?;
         Ok(Some(t))
     }
 
-    /// Polls the chat for an incoming audio newer than `after`, up to `secs`. `keep_waiting` sees every new
-    /// incoming message and can stop the wait early by returning false.
-    async fn wait_audio(&self, peer: &grammers_session::types::PeerRef, chat_id: i64, after: i32, secs: u64, mut keep_waiting: impl FnMut(&Message) -> bool) -> Result<Option<Track>> {
+    /// Polls the chat for an incoming audio newer than `after` that `want` accepts, up to `secs`. `keep_waiting`
+    /// sees every new incoming message and can stop the wait early by returning false.
+    async fn wait_audio(&self, peer: &grammers_session::types::PeerRef, chat_id: i64, after: i32, secs: u64, want: impl Fn(&Track) -> bool, mut keep_waiting: impl FnMut(&Message) -> bool) -> Result<Option<Track>> {
         let mut seen = after;
         // 1s polls: the reply usually lands within a couple of seconds
         for _ in 0..secs {
@@ -411,7 +477,10 @@ impl Tg {
                 seen = m.id();
                 // audio first: an inline result we sent ("via @bot") carries the file in our own message
                 if let Some(t) = track_of(&m, chat_id) {
-                    return Ok(Some(t));
+                    if want(&t) {
+                        return Ok(Some(t));
+                    }
+                    continue;
                 }
                 if m.outgoing() {
                     continue;
@@ -474,12 +543,33 @@ impl Tg {
         Ok(Some(path))
     }
 
+    fn chat_lock(&self, chat_id: i64) -> Arc<tokio::sync::Mutex<()>> {
+        self.chat_locks.lock().unwrap().entry(chat_id).or_default().clone()
+    }
+
+    fn check_missing(&self, chat_id: i64) -> Result<()> {
+        match self.missing.lock().unwrap().get(&chat_id) {
+            Some(t) if t.elapsed() < MISSING_FOR => Err(anyhow!("chat {chat_id} not found in dialogs")),
+            _ => Ok(()),
+        }
+    }
+
     async fn peer_ref(&self, chat_id: i64) -> Result<grammers_session::types::PeerRef> {
         let id = PeerId::from_bot_api_dialog_id(chat_id).ok_or_else(|| anyhow!("bad chat id"))?;
         if let Some(p) = self.peers.lock().unwrap().get(&chat_id) {
             return Ok(p.clone());
         }
-        // one dialog scan per chat per app run; all dialogs seen on the way are cached too
+        // grammers remembers every peer it has seen in the session file: no dialog walk needed after the first run
+        if let Ok(Some(p)) = self.session.peer_ref(id).await {
+            self.peers.lock().unwrap().insert(chat_id, p.clone());
+            return Ok(p);
+        }
+        // one walk at a time; the others wait and then find the result in the cache
+        let _scan = self.scan.lock().await;
+        if let Some(p) = self.peers.lock().unwrap().get(&chat_id) {
+            return Ok(p.clone());
+        }
+        self.check_missing(chat_id)?;
         let mut dialogs = self.client.iter_dialogs();
         let mut found = None;
         while let Some(d) = dialogs.next().await? {
@@ -490,10 +580,11 @@ impl Tg {
             if let Some(cid) = d.peer().id().bot_api_dialog_id() {
                 self.peers.lock().unwrap().insert(cid, r);
             }
-            if found.is_some() {
-                return Ok(found.unwrap());
+            if let Some(f) = found {
+                return Ok(f);
             }
         }
+        self.missing.lock().unwrap().insert(chat_id, Instant::now());
         Err(anyhow!("chat {chat_id} not found in dialogs"))
     }
 }

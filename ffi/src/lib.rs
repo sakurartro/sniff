@@ -152,7 +152,14 @@ impl App {
 
     pub async fn submit_password(&self, password: String) -> R<()> {
         let t = self.pw_token.lock().await.take().ok_or_else(|| e("no password requested"))?;
-        self.tg.check_password(t, &password).await.map_err(e)
+        // a wrong password hands the token back: the user can retype it
+        match self.tg.check_password(t, &password).await.map_err(e)? {
+            None => Ok(()),
+            Some(t) => {
+                *self.pw_token.lock().await = Some(t);
+                Err(e("Неверный пароль"))
+            }
+        }
     }
 
     /// Starts QR login in the background; poll `qr_state`. Restarting replaces a previous attempt.
@@ -302,10 +309,7 @@ impl App {
             }
         }
         let Some(t) = got else { return Ok(None) };
-        // fetched by the app, so out of the library until put in a playlist (a no-op if it was adopted before)
-        if self.store.playlists_with(t.document_id).await.map_err(e)?.is_empty() {
-            self.store.mark_rec(t.document_id).await.map_err(e)?;
-        }
+        // (a new row was stored as `rec`, out of the library until put in a playlist; your own tracks stay as they are)
         // the fresh Track from the bot does not know about ❤ / ✕ set earlier
         let t = self.store.track(t.document_id).await.map_err(e)?.unwrap_or(t);
         let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));

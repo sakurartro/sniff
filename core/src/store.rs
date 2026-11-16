@@ -61,11 +61,21 @@ impl Store {
         let _ = c.execute("ALTER TABLE tracks ADD COLUMN rec INTEGER NOT NULL DEFAULT 0", ()).await;
         // the old `liked` column (❤ = library) is left unused: ❤ now is the «Мне нравится» playlist, started empty
         let _ = c.execute("ALTER TABLE tracks ADD COLUMN disliked INTEGER NOT NULL DEFAULT 0", ()).await;
+        // newest message id scanned and "history fully scanned" flag: later syncs only look above `top`
+        let _ = c.execute("ALTER TABLE chats ADD COLUMN top INTEGER NOT NULL DEFAULT 0", ()).await;
+        let _ = c.execute("ALTER TABLE chats ADD COLUMN done INTEGER NOT NULL DEFAULT 0", ()).await;
+        // 1 = connected as a source bot by the user (only these are muted and sent queries)
+        let _ = c.execute("ALTER TABLE chats ADD COLUMN source INTEGER NOT NULL DEFAULT 0", ()).await;
         // once: recommendations ❤'d under the old scheme were in the library, keep them there (no `liked` column on new DBs)
         let v: i64 = c.query("PRAGMA user_version", ()).await?.next().await?.map(|r| r.get(0)).transpose()?.unwrap_or(0);
         if v < 1 {
             let _ = c.execute("UPDATE tracks SET rec=0 WHERE rec=1 AND liked=1", ()).await;
             c.execute("PRAGMA user_version=1", ()).await?;
+        }
+        if v < 2 {
+            // bots detected by the old code were all treated as sources: keep them
+            let _ = c.execute("UPDATE chats SET source=1 WHERE bot IS NOT NULL AND bot<>''", ()).await;
+            c.execute("PRAGMA user_version=2", ()).await?;
         }
         Ok(Self(c))
     }
@@ -99,9 +109,9 @@ impl Store {
         Ok(out)
     }
 
-    /// Selected chats with their bot kind (None = not checked yet).
+    /// Selected chats the user connected as source bots, with their kind (None = not checked yet).
     pub async fn selected_bots(&self) -> Result<Vec<(i64, Option<String>)>> {
-        let mut rows = self.0.query("SELECT id,bot FROM chats WHERE selected=1", ()).await?;
+        let mut rows = self.0.query("SELECT id,bot FROM chats WHERE selected=1 AND source=1", ()).await?;
         let mut out = vec![];
         while let Some(r) = rows.next().await? {
             out.push((r.get(0)?, r.get(1)?));
@@ -120,6 +130,11 @@ impl Store {
         Ok(())
     }
 
+    pub async fn set_source(&self, chat: i64) -> Result<()> {
+        self.0.execute("UPDATE chats SET source=1 WHERE id=?1", params![chat]).await?;
+        Ok(())
+    }
+
     pub async fn set_bot(&self, chat: i64, kind: &str) -> Result<()> {
         self.0.execute("UPDATE chats SET bot=?2 WHERE id=?1", params![chat, kind]).await?;
         Ok(())
@@ -131,6 +146,35 @@ impl Store {
         Ok(rows.next().await?.map(|r| r.get::<i32>(0)).transpose()?.unwrap_or(0))
     }
 
+    /// Has the backfill reached the oldest message of the chat?
+    pub async fn done(&self, chat: i64) -> Result<bool> {
+        let mut rows = self.0.query("SELECT done FROM chats WHERE id=?1", params![chat]).await?;
+        Ok(match rows.next().await? { Some(r) => r.get::<i64>(0)? != 0, None => false })
+    }
+
+    pub async fn set_done(&self, chat: i64) -> Result<()> {
+        self.0.execute("UPDATE chats SET done=1 WHERE id=?1", params![chat]).await?;
+        Ok(())
+    }
+
+    /// Newest message id scanned so far (0 = unknown).
+    pub async fn top(&self, chat: i64) -> Result<i32> {
+        let mut rows = self.0.query("SELECT top FROM chats WHERE id=?1", params![chat]).await?;
+        Ok(rows.next().await?.map(|r| r.get::<i32>(0)).transpose()?.unwrap_or(0))
+    }
+
+    /// Only ever raises it.
+    pub async fn set_top(&self, chat: i64, top: i32) -> Result<()> {
+        self.0.execute("UPDATE chats SET top=MAX(top,?2) WHERE id=?1", params![chat, top]).await?;
+        Ok(())
+    }
+
+    /// Newest message of the chat that holds a known track (0 = none): the starting point for chats scanned by older versions.
+    pub async fn newest_track_message(&self, chat: i64) -> Result<i32> {
+        let mut rows = self.0.query("SELECT COALESCE(MAX(message_id),0) FROM tracks WHERE chat_id=?1", params![chat]).await?;
+        Ok(rows.next().await?.map(|r| r.get::<i32>(0)).transpose()?.unwrap_or(0))
+    }
+
     pub async fn set_cursor(&self, chat: i64, cursor: i32) -> Result<()> {
         self.0.execute("UPDATE chats SET cursor=?2 WHERE id=?1", params![chat, cursor]).await?;
         Ok(())
@@ -138,22 +182,27 @@ impl Store {
 
     /// Returns true if the track was new.
     pub async fn add_track(&self, t: &Track) -> Result<bool> {
+        self.insert(t, false).await
+    }
+
+    /// A track the app fetched itself (recommendation, search download): a new row is born `rec` in one statement,
+    /// an existing row (your own track, an adopted one) is left exactly as it was. Returns true if it was new.
+    pub async fn add_fetched(&self, t: &Track) -> Result<bool> {
+        self.insert(t, true).await
+    }
+
+    async fn insert(&self, t: &Track, rec: bool) -> Result<bool> {
         let n = self
             .0
             .execute(
-                "INSERT OR IGNORE INTO tracks(document_id,title,performer,duration,size,chat_id,message_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![t.document_id, t.title.as_str(), t.performer.as_str(), t.duration, t.size as i64, t.chat_id, t.message_id],
+                "INSERT OR IGNORE INTO tracks(document_id,title,performer,duration,size,chat_id,message_id,rec) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![t.document_id, t.title.as_str(), t.performer.as_str(), t.duration, t.size as i64, t.chat_id, t.message_id, rec as i64],
             )
             .await?;
         if n > 0 {
             self.0.execute("INSERT INTO tracks_fts(rowid,title,performer) VALUES(?1,?2,?3)", params![t.document_id, t.title.as_str(), t.performer.as_str()]).await?;
         }
         Ok(n > 0)
-    }
-
-    pub async fn mark_rec(&self, document_id: i64) -> Result<()> {
-        self.0.execute("UPDATE tracks SET rec=1 WHERE document_id=?1", params![document_id]).await?;
-        Ok(())
     }
 
     pub async fn set_disliked(&self, document_id: i64, disliked: bool) -> Result<()> {
@@ -330,16 +379,26 @@ mod tests {
         assert_eq!(s.tracks("").await.unwrap().len(), 2);
         s.set_cursor(1, 5).await.unwrap();
         assert_eq!(s.cursor(1).await.unwrap(), 5);
+        assert!(!s.done(1).await.unwrap());
+        s.set_done(1).await.unwrap();
+        assert!(s.done(1).await.unwrap());
+        s.set_top(1, 9).await.unwrap();
+        s.set_top(1, 3).await.unwrap(); // never lowers
+        assert_eq!(s.top(1).await.unwrap(), 9);
+        assert_eq!(s.newest_track_message(1).await.unwrap(), 11);
         assert!(s.set_selected(1, true).await.unwrap());
         assert!(!s.set_selected(99, true).await.unwrap());
         assert_eq!(s.selected_chats().await.unwrap(), vec![1]);
+        assert!(s.selected_bots().await.unwrap().is_empty()); // not connected as a source
+        s.set_source(1).await.unwrap();
         assert_eq!(s.selected_bots().await.unwrap(), vec![(1, None)]);
         s.set_bot(1, "inline").await.unwrap();
         assert_eq!(s.selected_bots().await.unwrap(), vec![(1, Some("inline".into()))]);
         s.set_bot(1, "").await.unwrap(); // checked: not a bot
         assert_eq!(s.last_played().await.unwrap()[&10], 0);
         // a recommendation is known but not in the library until put in a playlist
-        s.mark_rec(11).await.unwrap();
+        s.add_fetched(&t(11, "Other", 1)).await.unwrap(); // already known as a rec: untouched
+        s.0.execute("UPDATE tracks SET rec=1 WHERE document_id=11", ()).await.unwrap();
         assert_eq!(s.tracks("").await.unwrap().len(), 1);
         assert_eq!(s.tracks("other").await.unwrap().len(), 1); // search sees it
         assert_eq!(s.all_tracks().await.unwrap().len(), 2);
@@ -348,8 +407,11 @@ mod tests {
         s.set_bot(2, "inline").await.unwrap();
         s.add_track(&t(13, "Own download", 2)).await.unwrap();
         assert_eq!(s.tracks("").await.unwrap().len(), 2);
-        s.add_track(&t(12, "Fetched", 2)).await.unwrap();
-        s.mark_rec(12).await.unwrap();
+        assert!(s.add_fetched(&t(12, "Fetched", 2)).await.unwrap());
+        assert_eq!(s.tracks("").await.unwrap().len(), 2);
+        // a fetch of a document you already own must not hide it from the library
+        assert!(!s.add_fetched(&t(13, "Own download", 2)).await.unwrap());
+        assert!(!s.track(13).await.unwrap().unwrap().rec);
         assert_eq!(s.tracks("").await.unwrap().len(), 2);
         // ❤ = «Мне нравится»: adopts the rec, newest on top, no duplicates
         s.set_in_playlist(LIKED, 11, true).await.unwrap();

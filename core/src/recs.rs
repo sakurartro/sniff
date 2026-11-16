@@ -66,10 +66,16 @@ fn lastfm(api_key: &str, q: &[(&str, &str)]) -> Result<Value> {
         .query_pairs(q.iter().copied().chain([("api_key", api_key), ("format", "json")]))
         .config()
         .http_status_as_error(false)
+        // ureq has no timeout by default: a dead socket would hold the recommendation lock until the app restarts
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
         .build()
         .call()?;
     let v: Value = r.body_mut().read_json()?;
     if let Some(e) = v.get("message").filter(|_| v.get("error").is_some()) {
+        // 6 = unknown track/artist: not a failure, just nothing similar (the caller falls back or moves on)
+        if v["error"].as_i64() == Some(6) {
+            return Ok(Value::Null);
+        }
         bail!("last.fm: {e}");
     }
     Ok(v)
@@ -125,18 +131,20 @@ pub async fn sources(tg: &Tg, store: &Store) -> Result<Vec<(i64, String)>> {
     for (id, kind) in store.selected_bots().await? {
         let kind = match kind {
             Some(k) => k,
-            None => {
-                let k = tg.detect_bot(id).await?;
-                store.set_bot(id, &k).await?;
-                k
-            }
+            // one chat that cannot be checked (left, flood) must not take the other bots down with it
+            None => match tg.detect_bot(id).await {
+                Ok(k) => {
+                    store.set_bot(id, &k).await?;
+                    k
+                }
+                Err(_) => continue,
+            },
         };
         if kind.is_empty() {
             continue;
         }
         // once per bot: its chat is noise (and ads), so notifications go off; a manual unmute stays
-        if !store.muted(id).await? {
-            tg.mute_forever(id).await?;
+        if !store.muted(id).await? && tg.mute_forever(id).await.is_ok() {
             store.set_muted(id).await?;
         }
         bots.push((id, kind));
@@ -173,7 +181,8 @@ impl Recs {
         for seed in seeds.iter().rev() {
             let Some(artist) = artists::split(&seed.performer).into_iter().next() else { continue };
             let (k, a, t) = (key.clone(), artist.clone(), seed.title.clone());
-            let cands = tokio::task::spawn_blocking(move || similar(&k, &a, &t, 30)).await??;
+            // Last.fm hiccup on one seed: try the next one
+            let Ok(cands) = tokio::task::spawn_blocking(move || similar(&k, &a, &t, 30)).await? else { continue };
             for c in cands {
                 let id = (artists::key(&c.artist), tkey(&c.title));
                 if owned.contains(&id) || !self.tried.insert(id) {
@@ -182,9 +191,13 @@ impl Recs {
                 for (chat, kind) in &bots {
                     match tg.fetch(store, *chat, kind, &c).await {
                         Ok(Some(t)) => {
-                            store.mark_rec(t.document_id).await?;
+                            // the row as stored: a song you own, adopted or ✕'d earlier is not a new recommendation
+                            let Some(row) = store.track(t.document_id).await? else { continue };
+                            if !row.rec || row.disliked {
+                                continue;
+                            }
                             self.misses.remove(chat);
-                            return Ok(Some(Track { rec: true, ..t }));
+                            return Ok(Some(row));
                         }
                         _ => *self.misses.entry(*chat).or_default() += 1,
                     }

@@ -62,7 +62,9 @@ async fn main() -> Result<()> {
                 })
                 .await?;
             if let SignIn::PasswordRequired(p) = r {
-                tg.check_password(p, &prompt("2FA password (echoed!): ")?).await?;
+                if tg.check_password(p, &prompt("2FA password (echoed!): ")?).await?.is_some() {
+                    anyhow::bail!("wrong password");
+                }
             }
             println!("ok");
         }
@@ -74,7 +76,9 @@ async fn main() -> Result<()> {
             }
             let token = tg.request_code(&prompt("phone (+...): ")?).await?;
             if let SignIn::PasswordRequired(p) = tg.sign_in(&token, &prompt("code: ")?).await? {
-                tg.check_password(p, &prompt("2FA password (echoed!): ")?).await?;
+                if tg.check_password(p, &prompt("2FA password (echoed!): ")?).await?.is_some() {
+                    anyhow::bail!("wrong password");
+                }
             }
             println!("ok");
         }
