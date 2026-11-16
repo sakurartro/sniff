@@ -96,6 +96,7 @@ fun LoginScreen(vm: Vm) {
     var code by rememberSaveable { mutableStateOf("") }
     var pass by rememberSaveable { mutableStateOf("") }
     val ctx = LocalContext.current
+    androidx.activity.compose.BackHandler(vm.step != Step.Phone) { vm.backToPhone() }
     Column(
         Modifier.fillMaxSize().systemBarsPadding().imePadding().padding(horizontal = 28.dp),
         verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally,
@@ -114,17 +115,20 @@ fun LoginScreen(vm: Vm) {
             Step.Code -> {
                 Field(code, { code = it }, "Код из Telegram", KeyboardType.Number)
                 Primary("Войти", !vm.busy && code.isNotBlank()) { vm.sendCode(code) }
+                TextButton({ vm.backToPhone() }) { Text("Изменить номер", color = MaterialTheme.colorScheme.primary) }
             }
             Step.Password -> {
                 Field(pass, { pass = it }, "Пароль 2FA", KeyboardType.Password, password = true)
                 Primary("Продолжить", !vm.busy && pass.isNotEmpty()) { vm.sendPassword(pass) }
+                TextButton({ vm.backToPhone() }) { Text("Назад", color = MaterialTheme.colorScheme.primary) }
             }
             Step.Qr -> {
                 val link = vm.qrLink
                 if (link == null) CircularProgressIndicator(color = MaterialTheme.colorScheme.primary) else {
                     Image(remember(link) { qrBitmap(link) }, null, Modifier.size(220.dp).clip(RoundedCornerShape(12.dp)), filterQuality = FilterQuality.None)
                     Text("Отсканируйте в Telegram: Настройки → Устройства", textAlign = TextAlign.Center, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
-                    Primary("Открыть в Telegram на этом телефоне", true) { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
+                    // no Telegram installed: nothing to open, but no crash either
+                    Primary("Открыть в Telegram на этом телефоне", true) { runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) } }
                 }
                 TextButton({ vm.backToPhone() }) { Text("Назад", color = MaterialTheme.colorScheme.primary) }
             }

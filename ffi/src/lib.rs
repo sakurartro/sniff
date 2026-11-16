@@ -327,6 +327,11 @@ impl App {
         self.streams.read(document_id, offset, len as usize).await.map_err(e)
     }
 
+    /// The player loaded this track (cached or streamed): counts as listened, and cache cleanup leaves it alone.
+    pub async fn set_playing(&self, document_id: i64) {
+        self.streams.set_playing(document_id).await;
+    }
+
     /// Resolves with the local file path once the track is completely downloaded.
     pub async fn await_download(&self, document_id: i64) -> R<String> {
         Ok(self.streams.finished(document_id).await.map_err(e)?.to_string_lossy().into_owned())

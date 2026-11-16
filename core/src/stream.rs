@@ -9,14 +9,17 @@ use std::{
     fs::{File, OpenOptions},
     os::unix::fs::FileExt,
     path::PathBuf,
-    sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex},
+    sync::{atomic::{AtomicI64, AtomicU64, Ordering}, Arc, Mutex},
     time::Duration,
 };
 use tokio::sync::Notify;
 
 const CH: u64 = 512 * 1024;
 const FG_WORKERS: usize = 4;
-const RETRIES: u32 = 6; // pauses 1+2+4+8+16+32 s, then the stream fails
+const RETRIES: u32 = 6; // pauses 1+2+4+8+16 s, then the stream fails
+/// A Telegram request that has not answered in this long is dead (a socket that died silently on a network change
+/// never errors by itself): it is retried like any other failure.
+const CHUNK_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Copy)]
 pub enum Mode {
@@ -65,6 +68,7 @@ pub struct Streams {
     m: Mutex<M>,
     sched: Notify,
     limit: AtomicU64, // max bytes of finished `.audio` files
+    playing: AtomicI64, // the track the player has loaded (cached ones too): never evicted or cleared
 }
 
 fn pack(done: &[bool]) -> Vec<u8> {
@@ -107,7 +111,7 @@ impl Dl {
 
 impl Streams {
     pub fn new(tg: Arc<Tg>, store: Arc<Store>, dir: PathBuf) -> Arc<Self> {
-        Arc::new(Self { tg, store, dir, m: Default::default(), sched: Notify::new(), limit: AtomicU64::new(2 << 30) })
+        Arc::new(Self { tg, store, dir, m: Default::default(), sched: Notify::new(), limit: AtomicU64::new(2 << 30), playing: AtomicI64::new(0) })
     }
 
     fn audio(&self, id: i64) -> PathBuf {
@@ -118,9 +122,19 @@ impl Streams {
         Some(self.audio(id)).filter(|p| p.exists())
     }
 
+    /// The player started this track: it counts as used now and its files are safe from cache cleanup, even when it
+    /// plays from an already complete file (nothing is "active" then).
+    pub async fn set_playing(&self, id: i64) {
+        self.playing.store(id, Ordering::Relaxed);
+        let _ = self.store.touch(id).await;
+    }
+
     /// Starts (or joins) the download of a track, marks it as used, and applies the scheduling mode.
     pub async fn open(self: &Arc<Self>, id: i64, mode: Mode) -> Result<Open> {
-        self.store.touch(id).await?;
+        // prefetching the next track is not listening to it
+        if matches!(mode, Mode::Fg) {
+            self.store.touch(id).await?;
+        }
         if let Some(p) = self.cached(id) {
             return Ok(Open::Cached(p));
         }
@@ -151,7 +165,7 @@ impl Streams {
     }
 
     async fn create(self: &Arc<Self>, id: i64) -> Result<Open> {
-        let media = Arc::new(self.tg.media_of(&self.store, id).await?);
+        let media = Arc::new(tokio::time::timeout(CHUNK_TIMEOUT, self.tg.media_of(&self.store, id)).await.map_err(|_| anyhow!("Telegram did not answer in time"))??);
         let Media::Document(d) = &*media else { bail!("not a document") };
         let size = d.size().unwrap_or(0) as u64;
         if size == 0 {
@@ -225,7 +239,7 @@ impl Streams {
             let media = dl.media.lock().unwrap().clone();
             let want = (dl.size - c as u64 * CH).min(CH) as usize;
             let r = async {
-                let b = self.tg.chunk(&media, c as i32).await?;
+                let b = tokio::time::timeout(CHUNK_TIMEOUT, self.tg.chunk(&media, c as i32)).await.map_err(|_| anyhow!("chunk {c}: Telegram did not answer in time"))??;
                 if b.len() != want {
                     bail!("chunk {c}: got {} bytes, expected {want}", b.len());
                 }
@@ -254,7 +268,7 @@ impl Streams {
                     }
                     tokio::time::sleep(Duration::from_secs(1 << (fails - 1))).await;
                     // the file reference may have expired: re-read the message
-                    if let Ok(m) = self.tg.media_of(&self.store, dl.id).await {
+                    if let Ok(Ok(m)) = tokio::time::timeout(CHUNK_TIMEOUT, self.tg.media_of(&self.store, dl.id)).await {
                         *dl.media.lock().unwrap() = Arc::new(m);
                     }
                 }
@@ -376,7 +390,7 @@ impl Streams {
     pub async fn clear(&self) -> u64 {
         let keep: HashSet<i64> = {
             let m = self.m.lock().unwrap();
-            m.active.keys().copied().chain(m.fg).collect()
+            m.active.keys().copied().chain(m.fg).chain(Some(self.playing.load(Ordering::Relaxed))).collect()
         };
         for e in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
             let p = e.path();
@@ -397,7 +411,7 @@ impl Streams {
         let played = self.store.last_played().await.unwrap_or_default();
         let keep: HashSet<i64> = {
             let m = self.m.lock().unwrap();
-            m.active.keys().copied().chain(m.fg).collect()
+            m.active.keys().copied().chain(m.fg).chain(Some(self.playing.load(Ordering::Relaxed))).collect()
         };
         let mut files: Vec<(i64, i64, u64, PathBuf)> = rd
             .flatten()

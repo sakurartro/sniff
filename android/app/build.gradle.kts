@@ -11,7 +11,7 @@ android {
         applicationId = "app.sniff"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionName = "0.1"
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -22,7 +22,15 @@ android {
             storePassword = System.getenv("SIGN_PASSWORD"); keyAlias = "tgkiku"; keyPassword = System.getenv("SIGN_PASSWORD")
         }
     }
-    buildTypes { getByName("debug") { signingConfigs.findByName("ci")?.let { signingConfig = it } } }
+    buildTypes {
+        getByName("debug") { signingConfigs.findByName("ci")?.let { signingConfig = it } }
+        // the APK we ship: not debuggable (`adb run-as` would hand out tg.session), same key as before so it updates in place
+        getByName("release") {
+            signingConfig = signingConfigs.findByName("ci") ?: signingConfigs.getByName("debug")
+            isMinifyEnabled = false // R8 would need keep rules for JNA/UniFFI; not worth it for now
+        }
+    }
+    lint { checkReleaseBuilds = false; abortOnError = false }
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -65,13 +65,15 @@ object Covers {
         if (jpg.exists()) return@withContext jpg
         val none = File(dir(), "${t.documentId}.none")
         if (none.exists()) return@withContext null
-        gate.withPermit {
-            runCatching { core.cover(t.documentId) }.getOrNull()?.let { return@withPermit File(it) }
-            // null = network error, so no `.none`: retry next time
-            val hit = itunesGate.withPermit { runCatching { itunes(t.performer, t.title, jpg) }.getOrNull() } ?: return@withPermit null
-            if (!hit) none.createNewFile()
-            jpg.takeIf { it.exists() }
-        }
+        // the two gates are taken one after the other, never nested: a hung iTunes request must not eat Telegram's slots
+        val tg = gate.withPermit { runCatching { core.cover(t.documentId) } }
+        // Telegram failed (flood, network): say nothing now, ask again later, and above all no `.none`
+        if (tg.isFailure) return@withContext null
+        tg.getOrNull()?.let { return@withContext File(it) }
+        // null = network error, so no `.none`: retry next time
+        val hit = itunesGate.withPermit { runCatching { itunes(t.performer, t.title, jpg) }.getOrNull() } ?: return@withContext null
+        if (!hit) none.createNewFile()
+        jpg.takeIf { it.exists() }
     }
 
     /** Whatever cover is already on disk, without any lookup. */
@@ -134,6 +136,12 @@ object Covers {
         } catch (_: Exception) { null } finally { r.release() }
     }
 
+    /** URL.readText() has no timeouts on Android: a connection that dies silently would hang forever. */
+    private fun get(url: String): ByteArray {
+        val c = URL(url).openConnection().apply { connectTimeout = 5000; readTimeout = 10000 }
+        return c.getInputStream().use { it.readBytes() }
+    }
+
     private fun norm(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
 
     /** Title without "(Remix)", "[Live]", "feat. X" etc., so versions compare equal but different songs don't. */
@@ -146,7 +154,7 @@ object Covers {
         val (bare, artist) = bareTitle(title) to norm(performer)
         if (bare.isEmpty() || artist.isEmpty()) return false
         val q = URLEncoder.encode("$performer $title", "UTF-8")
-        val res = JSONObject(URL("https://itunes.apple.com/search?media=music&entity=song&limit=5&term=$q").readText()).getJSONArray("results")
+        val res = JSONObject(get("https://itunes.apple.com/search?media=music&entity=song&limit=5&term=$q").toString(Charsets.UTF_8)).getJSONArray("results")
         for (i in 0 until res.length()) {
             val r = res.getJSONObject(i)
             val (rt, ra) = bareTitle(r.optString("trackName")) to norm(r.optString("artistName"))
@@ -154,7 +162,7 @@ object Covers {
             // exact song title (loose "contains" gave "Love" the cover of "Love Story"); the artist may list extra names
             if (rt == bare && (artist.contains(ra) || ra.contains(artist))) {
                 val img = r.optString("artworkUrl100").replace("100x100bb", "600x600bb")
-                out.writeBytes(URL(img).readBytes())
+                out.writeBytes(get(img))
                 return true
             }
         }

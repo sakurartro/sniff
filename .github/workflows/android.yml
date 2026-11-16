@@ -1,5 +1,7 @@
 name: android
 on: [push, workflow_dispatch]
+permissions: { contents: read }
+concurrency: { group: "apk-${{ github.ref }}", cancel-in-progress: true }
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -10,6 +12,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: aarch64-linux-android }
       - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p sniff-core
       - run: cargo install cargo-ndk --locked
       - name: Rust core -> .so
         env:
@@ -22,9 +25,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: 8.10.2 }
       - name: Signing key
-        run: echo "${{ secrets.SIGN_KEYSTORE_B64 }}" | base64 -d > android/app/release.jks
-      - run: gradle -p android assembleDebug
+        # without the secret there is no keystore and gradle falls back to the debug key
+        env:
+          KS: ${{ secrets.SIGN_KEYSTORE_B64 }}
+        run: if [ -n "$KS" ]; then echo "$KS" | base64 -d > android/app/release.jks; fi
+      - run: gradle -p android assembleRelease
         env:
           SIGN_PASSWORD: ${{ secrets.SIGN_PASSWORD }}
       - uses: actions/upload-artifact@v4
-        with: { name: sniff-debug, path: android/app/build/outputs/apk/debug/app-debug.apk }
+        with:
+          name: sniff
+          path: android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 14

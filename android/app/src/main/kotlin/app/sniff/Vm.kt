@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import uniffi.sniff_ffi.*
 import java.io.File
 
@@ -81,14 +82,19 @@ class Vm(a: Application) : AndroidViewModel(a) {
 
     private var qrJob: Job? = null
     private var playJob: Job? = null
+    /** Tracks that failed in a row: a dead track skips to the next, but a dead network must not skip the whole queue. */
+    private var failures = 0
 
     private val listener = object : Player.Listener {
-        override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
+        override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying; if (isPlaying) failures = 0 }
         override fun onPlaybackStateChanged(state: Int) {
             loadingTrack = state == Player.STATE_BUFFERING
             if (state == Player.STATE_ENDED) { if (repeat == 2) { player.seekTo(0); player.play() } else next() }
         }
-        override fun onPlayerError(e: PlaybackException) { error = e.cause?.cause?.message ?: e.message }
+        override fun onPlayerError(e: PlaybackException) {
+            error = e.cause?.cause?.message ?: e.message
+            if (++failures <= 3) next()
+        }
     }
 
     init {
@@ -98,11 +104,15 @@ class Vm(a: Application) : AndroidViewModel(a) {
         playing = player.isPlaying
         viewModelScope.launch { while (true) { if (playing && !loadingTrack) { pos = player.currentPosition; length = player.duration.coerceAtLeast(0) }; delay(500) } }
         run {
-            val c = openApp(a.filesDir.resolve("tg").path, a.cacheDir.resolve("tracks").path)
+            // one core per process: the service (and its streams) outlive the activity, a second one would fight over the same files
+            val c = if (Shared.hasCore()) Shared.core else openApp(a.filesDir.resolve("tg").path, a.cacheDir.resolve("tracks").path)
             core = c; Shared.core = c
             Covers.core = c; Covers.tracksDir = a.cacheDir.resolve("tracks")
             setCacheLimit(cacheGb)
-            authorized = c.isAuthorized()
+            // the check goes to Telegram: offline, trust the remembered login so the cached library still opens
+            val known = prefs.getBoolean("authorized", false)
+            authorized = try { withTimeoutOrNull(6000) { c.isAuthorized() } ?: known } catch (e: CancellationException) { throw e } catch (e: Exception) { if (known) true else throw e }
+            prefs.edit().putBoolean("authorized", authorized).apply()
             ready = true
             if (authorized) loadAll()
         }
@@ -142,7 +152,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
 
     fun backToPhone() { qrJob?.cancel(); core?.stopQr(); step = Step.Phone }
 
-    private suspend fun finishLogin() { authorized = true; loadAll() }
+    private suspend fun finishLogin() { authorized = true; prefs.edit().putBoolean("authorized", true).apply(); loadAll() }
 
     private suspend fun loadAll() {
         val c = core!!
@@ -263,9 +273,11 @@ class Vm(a: Application) : AndroidViewModel(a) {
         prefs.edit().putString("recent", recent.joinToString(",")).apply()
         playJob?.cancel()
         playJob = viewModelScope.launch {
-            loadingTrack = true; pos = 0
+            loadingTrack = true; pos = 0; length = 0
             try {
                 val c = core!!
+                // cached or streamed: it counts as listened and cache cleanup leaves it alone
+                c.setPlaying(t.documentId)
                 val cachedPath = c.cachedPath(t.documentId)
                 // not downloaded yet: play straight from the downloader (TgDataSource) while it fills the file
                 val uri = cachedPath?.let { Uri.fromFile(File(it)) } ?: Uri.parse("sniff://t/${t.documentId}")

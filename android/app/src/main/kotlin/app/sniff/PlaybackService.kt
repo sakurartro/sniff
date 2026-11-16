@@ -19,6 +19,8 @@ import uniffi.sniff_ffi.App
 object Shared {
     private var exo: ExoPlayer? = null
     lateinit var core: App // read by TgDataSource, set by Vm
+    /** The core is one per process: a new Vm (activity reopened while the service lives) must reuse it, not open a second one. */
+    fun hasCore() = ::core.isInitialized
     // shortcut: queue lives in Vm; notification next/prev work only while the Vm is alive, move the queue into the service to fix
     var onNext: (() -> Unit)? = null
     var onPrev: (() -> Unit)? = null
@@ -61,7 +63,8 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         session?.release()
-        Shared.player(this).release()
+        // the player is one per process and a new Vm picks it up again: stop it, do not release it
+        Shared.player(this).run { stop(); clearMediaItems() }
         session = null
         super.onDestroy()
     }
