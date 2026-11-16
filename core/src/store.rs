@@ -12,6 +12,8 @@ pub struct Track {
     pub size: u64,
     pub chat_id: i64,
     pub message_id: i32,
+    /// message date (unix seconds, 0 = unknown): message ids are per chat, so "newest first" sorts by this
+    pub date: i64,
     /// ❤: in the «Мне нравится» playlist (computed, not a column)
     pub liked: bool,
     /// fetched by the app (recommendation or search download), not adopted yet (adding it to a playlist clears it)
@@ -35,7 +37,7 @@ pub struct Playlist {
 pub struct Store(Connection);
 
 /// Track columns, the table aliased as `t`.
-const COLS: &str = "t.document_id,t.title,t.performer,t.duration,t.size,t.chat_id,t.message_id,EXISTS(SELECT 1 FROM playlist_tracks l WHERE l.playlist_id=1 AND l.document_id=t.document_id),t.rec,t.disliked";
+const COLS: &str = "t.document_id,t.title,t.performer,t.duration,t.size,t.chat_id,t.message_id,EXISTS(SELECT 1 FROM playlist_tracks l WHERE l.playlist_id=1 AND l.document_id=t.document_id),t.rec,t.disliked,t.date";
 
 impl Store {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -48,6 +50,7 @@ impl Store {
              CREATE TABLE IF NOT EXISTS playlists(id INTEGER PRIMARY KEY, name TEXT NOT NULL, cover TEXT);
              -- one row per (playlist, track): no duplicates; pos orders the playlist
              CREATE TABLE IF NOT EXISTS playlist_tracks(playlist_id INTEGER NOT NULL, document_id INTEGER NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY(playlist_id, document_id));
+             CREATE INDEX IF NOT EXISTS pt_doc ON playlist_tracks(document_id);
              INSERT OR IGNORE INTO playlists(id,name) VALUES(1,'Мне нравится');",
         )
         .await?;
@@ -61,6 +64,7 @@ impl Store {
         let _ = c.execute("ALTER TABLE tracks ADD COLUMN rec INTEGER NOT NULL DEFAULT 0", ()).await;
         // the old `liked` column (❤ = library) is left unused: ❤ now is the «Мне нравится» playlist, started empty
         let _ = c.execute("ALTER TABLE tracks ADD COLUMN disliked INTEGER NOT NULL DEFAULT 0", ()).await;
+        let _ = c.execute("ALTER TABLE tracks ADD COLUMN date INTEGER NOT NULL DEFAULT 0", ()).await;
         // newest message id scanned and "history fully scanned" flag: later syncs only look above `top`
         let _ = c.execute("ALTER TABLE chats ADD COLUMN top INTEGER NOT NULL DEFAULT 0", ()).await;
         let _ = c.execute("ALTER TABLE chats ADD COLUMN done INTEGER NOT NULL DEFAULT 0", ()).await;
@@ -76,6 +80,12 @@ impl Store {
             // bots detected by the old code were all treated as sources: keep them
             let _ = c.execute("UPDATE chats SET source=1 WHERE bot IS NOT NULL AND bot<>''", ()).await;
             c.execute("PRAGMA user_version=2", ()).await?;
+        }
+        if v < 3 {
+            // the search index folds ё to е: rebuild it that way
+            c.execute("INSERT INTO tracks_fts(tracks_fts) VALUES('delete-all')", ()).await?;
+            c.execute("INSERT INTO tracks_fts(rowid,title,performer) SELECT document_id, replace(replace(title,'ё','е'),'Ё','Е'), replace(replace(performer,'ё','е'),'Ё','Е') FROM tracks", ()).await?;
+            c.execute("PRAGMA user_version=3", ()).await?;
         }
         Ok(Self(c))
     }
@@ -195,12 +205,12 @@ impl Store {
         let n = self
             .0
             .execute(
-                "INSERT OR IGNORE INTO tracks(document_id,title,performer,duration,size,chat_id,message_id,rec) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-                params![t.document_id, t.title.as_str(), t.performer.as_str(), t.duration, t.size as i64, t.chat_id, t.message_id, rec as i64],
+                "INSERT OR IGNORE INTO tracks(document_id,title,performer,duration,size,chat_id,message_id,rec,date) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![t.document_id, t.title.as_str(), t.performer.as_str(), t.duration, t.size as i64, t.chat_id, t.message_id, rec as i64, t.date],
             )
             .await?;
         if n > 0 {
-            self.0.execute("INSERT INTO tracks_fts(rowid,title,performer) VALUES(?1,?2,?3)", params![t.document_id, t.title.as_str(), t.performer.as_str()]).await?;
+            self.0.execute("INSERT INTO tracks_fts(rowid,title,performer) VALUES(?1,?2,?3)", params![t.document_id, fold(&t.title), fold(&t.performer)]).await?;
         }
         Ok(n > 0)
     }
@@ -240,8 +250,10 @@ impl Store {
 
     /// Returns the new playlist's id.
     pub async fn create_playlist(&self, name: &str) -> Result<i64> {
-        self.0.execute("INSERT INTO playlists(name) VALUES(?1)", params![name]).await?;
-        Ok(self.0.last_insert_rowid())
+        // RETURNING: last_insert_rowid() on the shared connection could be another task's insert
+        let mut rows = self.0.query("INSERT INTO playlists(name) VALUES(?1) RETURNING id", params![name]).await?;
+        let id = rows.next().await?.map(|r| r.get::<i64>(0)).transpose()?.unwrap_or(0);
+        Ok(id)
     }
 
     pub async fn rename_playlist(&self, id: i64, name: &str) -> Result<()> {
@@ -271,6 +283,10 @@ impl Store {
             self.0.execute("DELETE FROM playlist_tracks WHERE playlist_id=?1 AND document_id=?2", params![id, document_id]).await?;
             return Ok(());
         }
+        // the playlist may have been deleted while the add sheet was open
+        if self.0.query("SELECT 1 FROM playlists WHERE id=?1", params![id]).await?.next().await?.is_none() {
+            return Ok(());
+        }
         let pos = if id == LIKED { "COALESCE(MIN(pos),0)-1" } else { "COALESCE(MAX(pos),0)+1" };
         self.0
             .execute(&format!("INSERT OR IGNORE INTO playlist_tracks(playlist_id,document_id,pos) SELECT ?1,?2,{pos} FROM playlist_tracks WHERE playlist_id=?1"), params![id, document_id])
@@ -289,14 +305,17 @@ impl Store {
         Ok(out)
     }
 
-    /// New order of the playlist after editing; tracks not listed are removed.
+    /// New order of the playlist after editing; tracks not listed are removed. Tracks added in the meantime
+    /// (❤ while the edit screen was open) are not in `document_ids` and go too only if they were there when
+    /// the editing started: ids the playlist does not hold are never inserted.
     pub async fn set_playlist_order(&self, id: i64, document_ids: &[i64]) -> Result<()> {
-        let tx = self.0.transaction().await?;
-        tx.execute("DELETE FROM playlist_tracks WHERE playlist_id=?1", params![id]).await?;
+        let keep = document_ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        // ids are numbers, formatting them in is safe
+        self.0.execute(&format!("DELETE FROM playlist_tracks WHERE playlist_id=?1 AND document_id NOT IN ({keep})"), params![id]).await?;
         for (i, d) in document_ids.iter().enumerate() {
-            tx.execute("INSERT OR IGNORE INTO playlist_tracks(playlist_id,document_id,pos) VALUES(?1,?2,?3)", params![id, *d, i as i64]).await?;
+            self.0.execute("UPDATE playlist_tracks SET pos=?3 WHERE playlist_id=?1 AND document_id=?2", params![id, *d, i as i64]).await?;
         }
-        tx.commit().await
+        Ok(())
     }
 
     /// Marks the track as just used (LRU cache eviction order).
@@ -335,23 +354,28 @@ impl Store {
     /// search downloads, `rec`) joins it only via a playlist.
     /// Otherwise FTS prefix search over all tracks.
     pub async fn tracks(&self, query: &str) -> Result<Vec<Track>> {
-        let q = query.split_whitespace().map(|w| format!("\"{}\"*", w.replace('"', ""))).collect::<Vec<_>>().join(" ");
+        let q = query.split_whitespace().map(|w| format!("\"{}\"*", fold(w).replace('"', ""))).collect::<Vec<_>>().join(" ");
         if q.is_empty() {
             return self
                 .list(
                     &format!(
-                        "SELECT {COLS} FROM tracks t WHERE t.disliked=0 AND (t.rec=0 OR EXISTS(SELECT 1 FROM playlist_tracks p WHERE p.document_id=t.document_id)) ORDER BY t.message_id DESC"
+                        "SELECT {COLS} FROM tracks t WHERE t.disliked=0 AND EXISTS(SELECT 1 FROM playlist_tracks p WHERE p.document_id=t.document_id) OR (t.disliked=0 AND t.rec=0 AND t.chat_id IN (SELECT id FROM chats WHERE selected=1)) ORDER BY t.date DESC, t.message_id DESC"
                     ),
                     (),
                 )
                 .await;
         }
-        self.list(&format!("SELECT {COLS} FROM tracks t JOIN tracks_fts f ON f.rowid=t.document_id WHERE tracks_fts MATCH ?1 ORDER BY rank"), params![q]).await
+        self.list(&format!("SELECT {COLS} FROM tracks t JOIN tracks_fts f ON f.rowid=t.document_id WHERE tracks_fts MATCH ?1 ORDER BY rank LIMIT 200"), params![q]).await
     }
 }
 
+/// ё and е are one letter for search (the FTS tokenizer would keep them apart).
+fn fold(s: &str) -> String {
+    s.replace('ё', "е").replace('Ё', "Е")
+}
+
 fn row_track(r: &Row) -> Result<Track> {
-    Ok(Track { document_id: r.get(0)?, title: r.get(1)?, performer: r.get(2)?, duration: r.get(3)?, size: r.get::<i64>(4)? as u64, chat_id: r.get(5)?, message_id: r.get(6)?, liked: r.get::<i64>(7)? != 0, rec: r.get::<i64>(8)? != 0, disliked: r.get::<i64>(9)? != 0 })
+    Ok(Track { document_id: r.get(0)?, title: r.get(1)?, performer: r.get(2)?, duration: r.get(3)?, size: r.get::<i64>(4)? as u64, chat_id: r.get(5)?, message_id: r.get(6)?, liked: r.get::<i64>(7)? != 0, rec: r.get::<i64>(8)? != 0, disliked: r.get::<i64>(9)? != 0, date: r.get(10)? })
 }
 
 #[cfg(test)]
@@ -359,7 +383,7 @@ mod tests {
     use super::*;
 
     fn t(id: i64, title: &str, chat: i64) -> Track {
-        Track { document_id: id, title: title.into(), performer: "Band".into(), duration: 100, size: 1, chat_id: chat, message_id: id as i32, liked: false, rec: false, disliked: false }
+        Track { document_id: id, title: title.into(), performer: "Band".into(), duration: 100, size: 1, chat_id: chat, message_id: id as i32, date: id, liked: false, rec: false, disliked: false }
     }
 
     fn ids(v: Vec<Track>) -> Vec<i64> {
@@ -371,10 +395,20 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = Store::open(d.path().join("db")).await.unwrap();
         s.upsert_chat(1, "A").await.unwrap();
+        s.set_selected(1, true).await.unwrap();
         assert!(s.add_track(&t(10, "Hello World", 1)).await.unwrap());
         assert!(!s.add_track(&t(10, "Hello World", 2)).await.unwrap()); // same document, other chat
         assert!(s.add_track(&t(11, "Other", 1)).await.unwrap());
         assert_eq!(s.tracks("hel").await.unwrap().len(), 1);
+        assert!(s.add_track(&t(14, "Ёлка", 1)).await.unwrap());
+        assert_eq!(s.tracks("елка").await.unwrap().len(), 1); // ё = е
+        assert_eq!(s.tracks("Ёлка").await.unwrap().len(), 1);
+        // unselecting a chat takes its tracks out of the library (search still finds them)
+        s.set_selected(1, false).await.unwrap();
+        assert_eq!(s.tracks("").await.unwrap().len(), 0);
+        s.set_selected(1, true).await.unwrap();
+        s.0.execute("DELETE FROM tracks WHERE document_id=14", ()).await.unwrap();
+        s.0.execute("INSERT INTO tracks_fts(tracks_fts) VALUES('rebuild')", ()).await.unwrap();
         assert_eq!(s.tracks("band").await.unwrap().len(), 2);
         assert_eq!(s.tracks("").await.unwrap().len(), 2);
         s.set_cursor(1, 5).await.unwrap();
@@ -404,6 +438,7 @@ mod tests {
         assert_eq!(s.all_tracks().await.unwrap().len(), 2);
         // tracks of a bot chat are the library like any chat's, unless the app fetched them itself
         s.upsert_chat(2, "Bot").await.unwrap();
+        s.set_selected(2, true).await.unwrap();
         s.set_bot(2, "inline").await.unwrap();
         s.add_track(&t(13, "Own download", 2)).await.unwrap();
         assert_eq!(s.tracks("").await.unwrap().len(), 2);
@@ -431,6 +466,8 @@ mod tests {
         assert_eq!(s.playlists_with(10).await.unwrap(), vec![LIKED, p]);
         s.set_playlist_order(p, &[10, 12]).await.unwrap();
         assert_eq!(ids(s.playlist_tracks(p).await.unwrap()), vec![10, 12]);
+        s.set_in_playlist(777, 10, true).await.unwrap(); // no such playlist: ignored
+        assert_eq!(s.playlists_with(10).await.unwrap(), vec![LIKED, p]);
         s.set_in_playlist(p, 12, false).await.unwrap();
         s.rename_playlist(p, "Mix 2").await.unwrap();
         s.rename_playlist(LIKED, "x").await.unwrap(); // ignored

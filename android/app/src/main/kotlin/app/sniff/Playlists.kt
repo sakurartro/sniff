@@ -44,7 +44,7 @@ import uniffi.sniff_ffi.TrackInfo
 fun PlaylistCover(vm: Vm, p: PlaylistInfo, modifier: Modifier, radius: Dp) {
     val m = modifier.clip(RoundedCornerShape(radius))
     if (p.cover != null) {
-        val bmp by produceState<Bitmap?>(null, p.cover) { value = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(p.cover) } }
+        val bmp by produceState<Bitmap?>(null, p.cover) { value = withContext(Dispatchers.IO) { Covers.decode(java.io.File(p.cover)) } }
         bmp?.let { Image(it.asImageBitmap(), null, m, contentScale = ContentScale.Crop); return }
     }
     val first by produceState(emptyList<TrackInfo>(), p.id, vm.plVersion) { value = vm.playlistTracks(p.id).take(4) }
@@ -64,7 +64,7 @@ fun PlaylistTile(vm: Vm, p: PlaylistInfo, modifier: Modifier, onClick: () -> Uni
     Column(modifier.clickable(onClick = onClick)) {
         PlaylistCover(vm, p, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
         Text(p.name, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
-        Text("${p.count} треков", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(tracksCount(p.count), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -98,13 +98,22 @@ fun PlaylistScreen(vm: Vm, id: Long, back: () -> Unit) {
         item {
             Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(Modifier.align(Alignment.End)) {
-                    TextButton({ edit = if (edit == null) list else { vm.savePlaylistOrder(id, edit!!.map { it.documentId }); null } }) {
+                    TextButton({
+                        val e = edit
+                        if (e == null) {
+                            // not loaded yet (or failed): saving an empty copy would wipe the playlist
+                            if (p.count == 0 || list.isNotEmpty()) edit = list
+                        } else {
+                            if (e.map { it.documentId } != list.map { it.documentId }) vm.savePlaylistOrder(id, e.map { it.documentId })
+                            edit = null
+                        }
+                    }) {
                         Text(if (edit == null) "Изменить" else "Готово", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                     }
                 }
                 PlaylistCover(vm, p, Modifier.size(220.dp), 14.dp)
                 Text(p.name, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp))
-                Text("${p.count} треков", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(tracksCount(p.count), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(14.dp))
                 if (edit == null) Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Pill("play", "Слушать", Modifier.weight(1f), list.isNotEmpty()) { vm.play(list, 0) }
@@ -120,7 +129,7 @@ fun PlaylistScreen(vm: Vm, id: Long, back: () -> Unit) {
         }
         val e = edit
         if (e == null) {
-            if (list.isEmpty()) item { Text("Пусто. Добавляйте треки через ⋯ в плеере.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(18.dp)) }
+            if (list.isEmpty()) item { Text(if (id == LIKED) "Пусто. Ставьте ❤ в плеере." else "Пусто. Добавляйте треки через ⋯ в плеере.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(18.dp)) }
             itemsIndexed(list, key = { _, t -> t.documentId }) { i, t -> TrackRow(t, vm.current?.documentId == t.documentId) { vm.play(list, i) } }
         } else itemsIndexed(e, key = { _, t -> t.documentId }) { i, t ->
             val idx by rememberUpdatedState(i)

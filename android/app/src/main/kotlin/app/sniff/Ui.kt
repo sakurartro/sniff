@@ -24,6 +24,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -77,11 +79,13 @@ fun Root(vm: Vm) {
                 !vm.authorized -> LoginScreen(vm)
                 else -> MainScreen(vm)
             }
+            // gone by itself after a few seconds; tap to dismiss earlier
+            LaunchedEffect(vm.error) { if (vm.error != null) { kotlinx.coroutines.delay(6000); vm.error = null } }
             vm.error?.let {
                 Text(
-                    it, color = Color.White, fontSize = 13.sp,
+                    it, color = MaterialTheme.colorScheme.inverseOnSurface, fontSize = 13.sp,
                     modifier = Modifier.align(Alignment.TopCenter).systemBarsPadding().padding(12.dp)
-                        .clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary).clickable { vm.error = null }.padding(12.dp),
+                        .clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.inverseSurface).clickable { vm.error = null }.padding(12.dp),
                 )
             }
         }
@@ -239,7 +243,7 @@ fun ChatTile(title: String, count: Int?, modifier: Modifier, onClick: () -> Unit
     Box(modifier.height(88.dp).clip(RoundedCornerShape(12.dp)).background(grad(title, dark = true)).clickable(onClick = onClick).padding(12.dp)) {
         Column(Modifier.align(Alignment.BottomStart)) {
             Text(title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (count != null) Text("$count треков", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
+            if (count != null) Text(tracksCount(count), color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
         }
     }
 }
@@ -292,7 +296,7 @@ fun LibraryTab(vm: Vm, push: (String) -> Unit) {
     val added = remember(vm.tracks) { vm.tracks.sortedByDescending { it.messageId }.take(6) } // shortcut: messageId order, TrackInfo has no post date
     LazyColumn(Modifier.fillMaxSize()) {
         item { LargeTitle("Библиотека") }
-        items(listOf("playlists" to "Плейлисты", "artists" to "Исполнители", "albums" to "Альбомы", "songs" to "Песни", "chats" to "Чаты")) { (r, n) ->
+        items(listOf("playlists" to "Плейлисты", "artists" to "Исполнители", "songs" to "Песни", "chats" to "Чаты")) { (r, n) ->
             NavRow(n, accent = true) { push(r) }
         }
         if (added.isNotEmpty()) {
@@ -332,6 +336,12 @@ fun Detail(vm: Vm, route: String, push: (String) -> Unit, pop: () -> Unit) {
     }
 }
 
+/** "1 трек", "2 трека", "5 треков", "21 трек". */
+fun tracksCount(n: Int): String {
+    val word = if (n % 100 in 11..14) "треков" else when (n % 10) { 1 -> "трек"; 2, 3, 4 -> "трека"; else -> "треков" }
+    return "$n $word"
+}
+
 @Composable
 fun GroupList(title: String, groups: List<Pair<String, Int>>, open: (String) -> Unit) {
     LazyColumn(Modifier.fillMaxSize()) {
@@ -343,12 +353,6 @@ fun GroupList(title: String, groups: List<Pair<String, Int>>, open: (String) -> 
 @Composable
 fun TrackList(vm: Vm, title: String, list: List<TrackInfo>, empty: String, header: @Composable () -> Unit = {}) {
     val state = rememberLazyListState()
-    // warm covers for the rows just below the viewport so they are ready when scrolled to
-    LaunchedEffect(list, state) {
-        snapshotFlow { state.firstVisibleItemIndex }.collectLatest { first ->
-            coroutineScope { for (t in list.drop((first - 2).coerceAtLeast(0)).take(25)) launch { Covers.file(t) } }
-        }
-    }
     LazyColumn(Modifier.fillMaxSize(), state) {
         item { LargeTitle(title) }
         item { header() }
@@ -495,13 +499,16 @@ fun NowPlaying(vm: Vm, close: () -> Unit, goto: (String) -> Unit) {
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(t.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(t.performer.ifBlank { "Неизвестный исполнитель" }, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary, maxLines = 1)
+                Text(t.performer.ifBlank { "Неизвестный исполнитель" }, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Ico(if (t.liked) "heart" else "heart0", 30.dp, if (t.liked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, Modifier.clickable { vm.toggleLike() })
         }
         Spacer(Modifier.height(16.dp))
+        // seek once on release: a seek per frame of the drag reopens the stream each time
+        var drag by remember { mutableStateOf<Float?>(null) }
         Slider(
-            vm.pos.coerceIn(0, dur).toFloat(), { vm.seek(it.toLong()) }, valueRange = 0f..dur.toFloat(),
+            drag ?: vm.pos.coerceIn(0, dur).toFloat(), { drag = it }, valueRange = 0f..dur.toFloat(),
+            onValueChangeFinished = { drag?.let { vm.seek(it.toLong()) }; drag = null },
             colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.onBackground, activeTrackColor = MaterialTheme.colorScheme.onBackground, inactiveTrackColor = MaterialTheme.colorScheme.outlineVariant),
         )
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
@@ -612,7 +619,12 @@ fun Art(t: TrackInfo, modifier: Modifier, radius: Dp) {
 
 @Composable
 fun Ico(kind: String, size: Dp, color: Color, modifier: Modifier = Modifier) {
-    Canvas(modifier.size(size)) {
+    val label = when (kind) {
+        "play" -> "Играть"; "pause" -> "Пауза"; "next" -> "Следующий"; "prev" -> "Предыдущий"; "shuffle" -> "Перемешать"
+        "repeat" -> "Повтор"; "repeat1" -> "Повтор трека"; "heart" -> "Убрать из «Мне нравится»"; "heart0" -> "В «Мне нравится»"
+        "x" -> "Не нравится"; "more" -> "Ещё"; "spark" -> "Рекомендации"; "queue" -> "Очередь"; else -> null
+    }
+    Canvas(modifier.size(size).then(if (label == null) Modifier else Modifier.semantics { contentDescription = label })) {
         val w = this.size.width
         fun tri(x0: Float, x1: Float) = Path().apply { moveTo(x0 * w, 0.2f * w); lineTo(x1 * w, 0.5f * w); lineTo(x0 * w, 0.8f * w); close() }
         when (kind) {

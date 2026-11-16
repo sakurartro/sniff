@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Intent
 import androidx.media3.common.MediaMetadata
 import android.net.Uri
+import android.os.Build
 import androidx.compose.runtime.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -19,6 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import uniffi.sniff_ffi.*
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 enum class Step { Phone, Code, Password, Qr }
 
@@ -56,9 +58,9 @@ class Vm(a: Application) : AndroidViewModel(a) {
     /** Saves the audio cache limit and lets core evict down to it. */
     fun setCacheLimit(gb: Float) {
         cacheGb = gb; prefs.edit().putFloat("cacheGb", gb).apply()
-        viewModelScope.launch { cacheUsed = core!!.setCacheLimit((gb * (1 shl 30)).toLong().toULong()).toLong() }
+        viewModelScope.launch(Dispatchers.Default) { cacheUsed = core!!.setCacheLimit((gb * (1 shl 30)).toLong().toULong()).toLong() }
     }
-    fun clearCache() { viewModelScope.launch { cacheUsed = core!!.clearCache().toLong() } }
+    fun clearCache() { viewModelScope.launch(Dispatchers.Default) { cacheUsed = core!!.clearCache().toLong(); Covers.clearMisc() } }
 
     var query by mutableStateOf("")
     var recent by mutableStateOf(prefs.getString("recent", "")!!.split(',').mapNotNull { it.toLongOrNull() })
@@ -105,7 +107,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
         viewModelScope.launch { while (true) { if (playing && !loadingTrack) { pos = player.currentPosition; length = player.duration.coerceAtLeast(0) }; delay(500) } }
         run {
             // one core per process: the service (and its streams) outlive the activity, a second one would fight over the same files
-            val c = if (Shared.hasCore()) Shared.core else openApp(a.filesDir.resolve("tg").path, a.cacheDir.resolve("tracks").path)
+            val c = if (Shared.hasCore()) Shared.core else openApp(a.filesDir.resolve("tg").path, a.cacheDir.resolve("tracks").path, Build.MODEL, "Android ${Build.VERSION.RELEASE}")
             core = c; Shared.core = c
             Covers.core = c; Covers.tracksDir = a.cacheDir.resolve("tracks")
             setCacheLimit(cacheGb)
@@ -120,9 +122,14 @@ class Vm(a: Application) : AndroidViewModel(a) {
 
     private fun msg(e: Exception) = (e as? FfiException.Msg)?.msg ?: e.toString()
 
-    private fun run(block: suspend () -> Unit) = viewModelScope.launch {
-        busy = true; error = null
-        try { block() } catch (e: CancellationException) { throw e } catch (e: Exception) { error = msg(e); ready = true } finally { busy = false }
+    private val running = AtomicInteger()
+
+    /** Rust futures are polled by the thread that awaits them: on Main, SQLite work would freeze the UI. */
+    private fun run(block: suspend () -> Unit) = viewModelScope.launch(Dispatchers.Default) {
+        // a quick tap (❤) must not clear a long job's busy flag or the error it just reported
+        if (running.getAndIncrement() == 0) error = null
+        busy = true
+        try { block() } catch (e: CancellationException) { throw e } catch (e: Exception) { error = msg(e); ready = true } finally { busy = running.decrementAndGet() > 0 }
     }
 
     // --- login ---
@@ -168,26 +175,41 @@ class Vm(a: Application) : AndroidViewModel(a) {
 
     fun toggle(c: Chat) { run { core!!.setSelected(c.id, !c.selected); chats = core!!.chats() } }
 
+    @Volatile private var syncing = false
+
     fun sync() {
+        if (syncing) return
+        syncing = true
         run {
-            val c = core!!
-            val sel = c.selectedChats()
-            if (sel.isEmpty()) { syncText = "Выберите чаты"; return@run }
-            var total = 0
-            for (id in sel) {
-                do {
-                    val s = c.syncStep(id, 50u)
-                    total += s.newTracks.toInt()
-                    syncText = "Найдено треков: $total"
-                    tracks = c.tracks("")
-                } while (!s.done)
-            }
-            syncText = "Готово: +$total"
+            try {
+                val c = core!!
+                val sel = c.selectedChats()
+                if (sel.isEmpty()) { syncText = "Выберите чаты"; return@run }
+                var total = 0
+                var failed: String? = null
+                for (id in sel) {
+                    // one chat failing (left it, flood) must not stop the others
+                    try {
+                        do {
+                            val s = c.syncStep(id, 50u)
+                            total += s.newTracks.toInt()
+                            syncText = "Найдено треков: $total"
+                            if (s.newTracks > 0u) tracks = c.tracks("")
+                        } while (!s.done)
+                    } catch (e: CancellationException) { throw e } catch (e: Exception) { failed = msg(e) }
+                }
+                tracks = c.tracks("")
+                syncText = "Готово: +$total"
+                failed?.let { error = it }
+            } finally { syncing = false }
         }
     }
 
+    private var searchJob: Job? = null
+
     fun search(q: String) {
-        viewModelScope.launch { try { results = if (q.isBlank()) emptyList() else core!!.tracks(q) } catch (e: Exception) { error = msg(e) } }
+        searchJob?.cancel() // a slow answer for "ab" must not overwrite the one for "abba"
+        searchJob = viewModelScope.launch(Dispatchers.Default) { try { results = if (q.isBlank()) emptyList() else core!!.tracks(q) } catch (e: CancellationException) { throw e } catch (e: Exception) { error = msg(e) } }
         botJob?.cancel(); botHits = emptyList(); botSearching = false
         if (q.isBlank() || KNOWN_BOTS.none { it in botSources }) return
         botJob = viewModelScope.launch {
@@ -218,10 +240,18 @@ class Vm(a: Application) : AndroidViewModel(a) {
     }
 
     // --- player ---
-    fun play(list: List<TrackInfo>, i: Int) { orig = list; queue = if (shuffle) list.take(i + 1) + list.drop(i + 1).filter { !it.disliked }.shuffled() else list; index = i; load() }
+    fun play(list: List<TrackInfo>, i: Int) {
+        if (i !in list.indices) return
+        recJob?.cancel() // a recommendation made for the previous queue does not belong in this one
+        orig = list
+        // shuffle: the tapped track first, everything else (before it too) in random order
+        if (shuffle) { queue = listOf(list[i]) + list.filterIndexed { j, t -> j != i && !t.disliked }.shuffled(); index = 0 } else { queue = list; index = i }
+        load()
+    }
     /** 🔀 button of a list: shuffle on, random start, ✕ tracks left out. */
     fun playShuffled(list: List<TrackInfo>) {
         val l = list.filter { !it.disliked }.ifEmpty { return }
+        recJob?.cancel()
         shuffle = true; orig = l; queue = l.shuffled(); index = 0; load()
     }
     fun toggleShuffle() {
@@ -255,7 +285,8 @@ class Vm(a: Application) : AndroidViewModel(a) {
      *  while earlier tracks play; if it is late it simply lands later. */
     private fun prepareRec() {
         if (!recsOn || recJob?.isActive == true || queue.drop(index + 1).any { it.rec }) return
-        val seeds = queue.take(index + 1).takeLast(10).map { it.documentId } // core keeps the last 3 own (non-rec, non-✕) ones
+        // own tracks only (no ✨, no ✕); the core keeps the last 3
+        val seeds = queue.take(index + 1).filter { !it.rec && !it.disliked }.takeLast(10).map { it.documentId }
         if (seeds.isEmpty()) return
         recJob = viewModelScope.launch {
             val r = try { core!!.recommend(seeds) } catch (e: CancellationException) { throw e } catch (_: Exception) { null } ?: return@launch
@@ -287,7 +318,10 @@ class Vm(a: Application) : AndroidViewModel(a) {
                 player.prepare(); player.play()
                 getApplication<Application>().startService(Intent(getApplication(), PlaybackService::class.java))
                 if (cover == null) launch { Covers.file(t)?.let { setCover(t, it) } }
-                if (cachedPath != null) prefetchNext(t) else launch {
+                if (cachedPath != null) {
+                    launch { Covers.upgrade(t)?.let { setCover(t, it) } }
+                    prefetchNext(t)
+                } else launch {
                     // the file is complete: switch to the tag cover and start loading the next track
                     try {
                         c.awaitDownload(t.documentId)
@@ -321,11 +355,16 @@ class Vm(a: Application) : AndroidViewModel(a) {
     /** Track just marked ✕, offered back for a few seconds. */
     var undo by mutableStateOf<TrackInfo?>(null)
     /** ✕ «Не нравится»: out of the library, recs and shuffle (playlists keep it), then skipped like `next`. */
+    private var lastDismiss = 0L
     fun dismiss() {
         val t = current ?: return
+        // a double tap would ✕ the next track too
+        val now = System.currentTimeMillis()
+        if (now - lastDismiss < 700) return
+        lastDismiss = now
         setDisliked(t, true); undo = t
         viewModelScope.launch { delay(4000); if (undo == t) undo = null }
-        next()
+        if (index + 1 < queue.size || repeat == 1) next() else player.pause() // nothing to skip to: do not keep playing a ✕ track
     }
     fun restore() { undo?.let { setDisliked(it, false) }; undo = null }
 
@@ -353,7 +392,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
     /** New playlist, optionally with a first track; `done` gets its id. */
     fun createPlaylist(name: String, first: TrackInfo? = null, done: (Long) -> Unit = {}) {
         if (name.isBlank()) return
-        run { val id = core!!.createPlaylist(name); if (first != null) { setIn(id, first, true) } else reloadLib(); done(id) }
+        run { val id = core!!.createPlaylist(name); if (first != null) { setIn(id, first, true) } else reloadLib(); withContext(Dispatchers.Main) { done(id) } }
     }
     fun renamePlaylist(id: Long, name: String) { if (name.isNotBlank()) run { core!!.renamePlaylist(id, name); reloadLib() } }
     fun deletePlaylist(id: Long) { run { playlists.firstOrNull { it.id == id }?.cover?.let { File(it).delete() }; core!!.deletePlaylist(id); reloadLib() } }
@@ -362,7 +401,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
     fun setPlaylistCover(id: Long, uri: Uri?) {
         run {
             val app = getApplication<Application>()
-            playlists.firstOrNull { it.id == id }?.cover?.let { File(it).delete() }
+            val old = playlists.firstOrNull { it.id == id }?.cover
             val path = uri?.let {
                 // new name each time so screens keyed on the path redraw
                 val f = File(app.filesDir, "covers").apply { mkdirs() }.resolve("pl_${id}_${System.currentTimeMillis()}.jpg")
@@ -370,6 +409,7 @@ class Vm(a: Application) : AndroidViewModel(a) {
                 f.path
             }
             core!!.setPlaylistCover(id, path); reloadLib()
+            old?.let { File(it).delete() }
         }
     }
 
@@ -389,11 +429,16 @@ class Vm(a: Application) : AndroidViewModel(a) {
         queue = queue.toMutableList().also { it.add(to, it.removeAt(from)) }
         if (!shuffle) orig = queue
     }
-    fun toggle() { if (player.isPlaying) player.pause() else player.play() }
+    fun toggle() {
+        if (player.isPlaying) { player.pause(); return }
+        if (player.playbackState == Player.STATE_IDLE) player.prepare() // after a playback error play() alone does nothing
+        player.play()
+    }
     fun seek(ms: Long) { player.seekTo(ms); pos = ms }
 
     override fun onCleared() {
         player.removeListener(listener)
+        core?.stopQr()
         Shared.onNext = null; Shared.onPrev = null
     }
 }

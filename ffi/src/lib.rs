@@ -15,8 +15,21 @@ impl std::fmt::Display for FfiError {
         f.write_str(msg)
     }
 }
+/// Telegram's raw errors turned into something a user can act on; unknown ones pass through.
 fn e(x: impl std::fmt::Display) -> FfiError {
-    FfiError::Msg { msg: x.to_string() }
+    let s = x.to_string();
+    let msg = if s.contains("FLOOD") {
+        "Telegram просит подождать. Не повторяйте запрос сразу, попробуйте позже.".to_string()
+    } else if s.contains("AUTH_KEY_UNREGISTERED") || s.contains("SESSION_REVOKED") || s.contains("USER_DEACTIVATED") {
+        "Сессия Telegram завершена. Войдите заново (очистите данные приложения).".to_string()
+    } else if s.contains("PHONE_CODE_INVALID") {
+        "Неверный код".to_string()
+    } else if s.contains("PHONE_NUMBER_INVALID") {
+        "Неверный номер телефона".to_string()
+    } else {
+        s
+    };
+    FfiError::Msg { msg }
 }
 type R<T> = Result<T, FfiError>;
 
@@ -101,16 +114,33 @@ pub struct App {
     qr: Arc<Mutex<Login>>,
     qr_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     recs: AsyncMutex<Recs>,
+    /// canonical artist spellings; rebuilt only when the library gained tracks
+    names: Mutex<Option<Arc<HashMap<String, String>>>>,
+}
+
+impl App {
+    async fn names(&self) -> R<Arc<HashMap<String, String>>> {
+        if let Some(n) = self.names.lock().unwrap().clone() {
+            return Ok(n);
+        }
+        let n = Arc::new(artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str)));
+        *self.names.lock().unwrap() = Some(n.clone());
+        Ok(n)
+    }
+
+    fn library_grew(&self) {
+        *self.names.lock().unwrap() = None;
+    }
 }
 
 /// `data_dir` holds session + library db, `cache_dir` holds downloaded audio.
 #[uniffi::export(async_runtime = "tokio")]
-pub async fn open_app(data_dir: String, cache_dir: String) -> R<Arc<App>> {
+pub async fn open_app(data_dir: String, cache_dir: String, device_model: String, system_version: String) -> R<Arc<App>> {
     let (data, cache) = (PathBuf::from(data_dir), PathBuf::from(cache_dir));
     std::fs::create_dir_all(&data).map_err(e)?;
     std::fs::create_dir_all(&cache).map_err(e)?;
     let keys = ApiKeys::resolve(None).map_err(e)?;
-    let tg = Tg::connect(data.join("tg.session"), keys).await.map_err(e)?;
+    let tg = Tg::connect(data.join("tg.session"), keys, (&device_model, &system_version)).await.map_err(e)?;
     let store = Arc::new(Store::open(data.join("library.sqlite")).await.map_err(e)?);
     let tg = Arc::new(tg);
     Ok(Arc::new(App {
@@ -123,6 +153,7 @@ pub async fn open_app(data_dir: String, cache_dir: String) -> R<Arc<App>> {
         qr: Arc::new(Mutex::new(Login::Idle)),
         qr_task: Mutex::new(None),
         recs: AsyncMutex::new(Recs::default()),
+        names: Mutex::new(None),
     }))
 }
 
@@ -203,11 +234,14 @@ impl App {
     /// One backfill page; call repeatedly per chat until `done`.
     pub async fn sync_step(&self, chat_id: i64, limit: u32) -> R<SyncStep> {
         let (n, done) = self.tg.backfill_page(&self.store, chat_id, limit as usize).await.map_err(e)?;
+        if n > 0 {
+            self.library_grew();
+        }
         Ok(SyncStep { new_tracks: n as u32, done })
     }
 
     pub async fn tracks(&self, query: String) -> R<Vec<TrackInfo>> {
-        let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
+        let names = self.names().await?;
         Ok(self.store.tracks(&query).await.map_err(e)?.into_iter().map(|t| info(t, &names)).collect())
     }
 
@@ -233,7 +267,7 @@ impl App {
     }
 
     pub async fn playlist_tracks(&self, id: i64) -> R<Vec<TrackInfo>> {
-        let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
+        let names = self.names().await?;
         Ok(self.store.playlist_tracks(id).await.map_err(e)?.into_iter().map(|t| info(t, &names)).collect())
     }
 
@@ -279,7 +313,8 @@ impl App {
             tracks.extend(self.store.track(id).await.map_err(e)?);
         }
         let Some(t) = self.recs.lock().await.next(&self.tg, &self.store, &tracks).await.map_err(e)? else { return Ok(None) };
-        let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
+        self.library_grew();
+        let names = self.names().await?;
         Ok(Some(info(t, &names)))
     }
 
@@ -312,7 +347,8 @@ impl App {
         // (a new row was stored as `rec`, out of the library until put in a playlist; your own tracks stay as they are)
         // the fresh Track from the bot does not know about ❤ / ✕ set earlier
         let t = self.store.track(t.document_id).await.map_err(e)?.unwrap_or(t);
-        let names = artists::canonical(self.store.performers().await.map_err(e)?.iter().map(String::as_str));
+        self.library_grew();
+        let names = self.names().await?;
         // not a recommendation for the eye: no ✨ in the queue
         Ok(Some(info(Track { rec: false, ..t }, &names)))
     }

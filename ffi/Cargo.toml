@@ -10,3 +10,5 @@ crate-type = ["cdylib"]
 sniff-core = { path = "../core" }
 tokio = { version = "1.54.1", features = ["full"] }
 uniffi = { version = "0.29", features = ["tokio"] }
+# uniffi runs its futures on async-compat's fallback runtime, one thread by default: give MTProto, workers and file writes real threads
+async-compat = { version = "0.2", features = ["multi-thread"] }

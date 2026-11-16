@@ -32,8 +32,10 @@ import java.util.concurrent.ConcurrentHashMap
 object Covers {
     lateinit var core: App
     lateinit var tracksDir: File // where `<id>.audio` files and `covers/` live
-    private val mem = LruCache<Long, Bitmap>(200)
-    private val hitMem = LruCache<String, Bitmap>(50)
+    // sized in bytes: tag art decodes to megabytes each, 200 of them by count would run the phone out of memory
+    private val mem = object : LruCache<Long, Bitmap>((Runtime.getRuntime().maxMemory() / 8).toInt()) { override fun sizeOf(key: Long, value: Bitmap) = value.byteCount }
+    private val hitMem = object : LruCache<String, Bitmap>((Runtime.getRuntime().maxMemory() / 32).toInt()) { override fun sizeOf(key: String, value: Bitmap) = value.byteCount }
+    @Volatile private var itunesBlockedUntil = 0L // iTunes answers 403 past ~20 requests a minute: stop asking for a while
     /** Bumped when a track's cover file changes (tag art replaced the thumb), so shown covers reload. */
     var rev by mutableIntStateOf(0)
     private val gate = Semaphore(3) // shortcut: fixed 3 Telegram lookups at once, lower if it flood-waits
@@ -50,7 +52,8 @@ object Covers {
         val d = inflight.putIfAbsent(t.documentId, mine) ?: mine.also { m ->
             scope.launch { try { m.complete(load(t)) } catch (e: Throwable) { m.complete(null) } finally { inflight.remove(t.documentId) } }
         }
-        return d.await()
+        // a lookup that started before the tag art was extracted must not hide it
+        return d.await()?.let { cached(t) ?: it }
     }
 
     private suspend fun load(t: TrackInfo): File? = withContext(Dispatchers.IO) {
@@ -119,7 +122,7 @@ object Covers {
     }
 
     /** Decoded at most ~600px: tag art can be 3000px, and 200 of those in [mem] would run out of memory. */
-    private fun decode(f: File): Bitmap? {
+    internal fun decode(f: File): Bitmap? {
         val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(f.path, o)
         var s = 1
@@ -132,14 +135,32 @@ object Covers {
         val r = MediaMetadataRetriever()
         return try {
             r.setDataSource(audio.path)
-            r.embeddedPicture?.let { out.writeBytes(it); out }
+            r.embeddedPicture?.let { out.writeAtomic(it); out }
         } catch (_: Exception) { null } finally { r.release() }
     }
 
     /** URL.readText() has no timeouts on Android: a connection that dies silently would hang forever. */
-    private fun get(url: String): ByteArray {
-        val c = URL(url).openConnection().apply { connectTimeout = 5000; readTimeout = 10000 }
-        return c.getInputStream().use { it.readBytes() }
+    private fun get(url: String, search: Boolean = false): ByteArray {
+        if (search && System.currentTimeMillis() < itunesBlockedUntil) throw java.io.IOException("iTunes backoff")
+        val c = URL(url).openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 5000; c.readTimeout = 10000
+        try {
+            if (search && c.responseCode in listOf(403, 429)) { itunesBlockedUntil = System.currentTimeMillis() + 60_000; throw java.io.IOException("iTunes ${c.responseCode}") }
+            return c.inputStream.use { it.readBytes() }
+        } finally { c.disconnect() }
+    }
+
+    /** A half-written cover must never look finished: write aside, then rename. */
+    private fun File.writeAtomic(bytes: ByteArray) {
+        val tmp = File(parentFile, "$name.tmp")
+        tmp.writeBytes(bytes)
+        if (!tmp.renameTo(this)) { tmp.delete(); throw java.io.IOException("cannot save $name") }
+    }
+
+    /** Cache cleanup: remembered misses and bot-search covers go too (they are rebuilt on demand). */
+    fun clearMisc() {
+        dir().listFiles()?.filter { it.name.endsWith(".none") || it.name.endsWith(".noemb") || it.name.endsWith(".tmp") || it.name.startsWith("hit_") }?.forEach { it.delete() }
+        hitMem.evictAll()
     }
 
     private fun norm(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
@@ -154,7 +175,7 @@ object Covers {
         val (bare, artist) = bareTitle(title) to norm(performer)
         if (bare.isEmpty() || artist.isEmpty()) return false
         val q = URLEncoder.encode("$performer $title", "UTF-8")
-        val res = JSONObject(get("https://itunes.apple.com/search?media=music&entity=song&limit=5&term=$q").toString(Charsets.UTF_8)).getJSONArray("results")
+        val res = JSONObject(get("https://itunes.apple.com/search?media=music&entity=song&limit=5&term=$q", search = true).toString(Charsets.UTF_8)).getJSONArray("results")
         for (i in 0 until res.length()) {
             val r = res.getJSONObject(i)
             val (rt, ra) = bareTitle(r.optString("trackName")) to norm(r.optString("artistName"))
@@ -162,7 +183,7 @@ object Covers {
             // exact song title (loose "contains" gave "Love" the cover of "Love Story"); the artist may list extra names
             if (rt == bare && (artist.contains(ra) || ra.contains(artist))) {
                 val img = r.optString("artworkUrl100").replace("100x100bb", "600x600bb")
-                out.writeBytes(get(img))
+                out.writeAtomic(get(img))
                 return true
             }
         }

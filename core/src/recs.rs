@@ -28,6 +28,16 @@ pub fn tkey(title: &str) -> String {
     if out.is_empty() { title.trim().to_lowercase() } else { out }
 }
 
+/// Words that make a different recording of the same song ("Believer - Live", "Believer (Slowed)").
+const VERSIONS: [&str; 10] = ["remix", "live", "acoustic", "instrumental", "slowed", "karaoke", "cover", "nightcore", "8d", "sped"];
+
+/// Which of the version words the title has, as a sorted list: both sides must agree.
+fn versions(title: &str) -> Vec<&'static str> {
+    let lower = title.to_lowercase();
+    let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).collect();
+    VERSIONS.iter().copied().filter(|v| words.contains(v)).collect()
+}
+
 /// Is (performer, title, duration) the wanted song? An empty performer means "Artist - Title" is in the title.
 pub fn matches(c: &Cand, performer: &str, title: &str, duration: Option<u32>) -> bool {
     let ck = artists::key(&c.artist);
@@ -41,7 +51,7 @@ pub fn matches(c: &Cand, performer: &str, title: &str, duration: Option<u32>) ->
     };
     // shortcut: fixed +-10s window, extended mixes get rejected on purpose
     let dur_ok = duration.is_none_or(|d| d == 0 || c.duration == 0 || d.abs_diff(c.duration) <= 10);
-    artist_ok && tkey(title) == tkey(&c.title) && dur_ok
+    artist_ok && tkey(title) == tkey(&c.title) && versions(title) == versions(&c.title) && dur_ok
 }
 
 /// Last.fm track.getSimilar; many hits have no similar tracks, then top tracks of similar artists stand in.
@@ -99,8 +109,10 @@ fn cands(tracks: &Value) -> Vec<Cand> {
 
 /// `?start=` payload of a t.me deep link ("https://t.me/somebot?start=deezertrack1" -> "deezertrack1").
 pub fn start_payload(url: &str) -> Option<String> {
-    let (host, q) = url.split_once('?')?;
-    if !host.contains("t.me/") {
+    let (path, q) = url.split_once('?')?;
+    // the host itself, not "contains": evilt.me/ or a query mentioning t.me/ must not pass
+    let host = path.split("://").last()?.split('/').next()?;
+    if !matches!(host, "t.me" | "www.t.me" | "telegram.me") {
         return None;
     }
     q.split('&').find_map(|kv| kv.strip_prefix("start=")).filter(|p| !p.is_empty()).map(str::to_string)
@@ -154,6 +166,14 @@ pub async fn sources(tg: &Tg, store: &Store) -> Result<Vec<(i64, String)>> {
     Ok(bots)
 }
 
+/// (performer, title) of a track; an untagged performer with "Artist - Title" in the title is split out.
+fn tagged(t: &Track) -> (String, String) {
+    match t.title.split_once(" - ").filter(|_| t.performer.trim().is_empty()) {
+        Some((a, title)) => (a.trim().to_string(), title.trim().to_string()),
+        None => (t.performer.clone(), t.title.clone()),
+    }
+}
+
 /// Per-session state: songs already tried, and bots that keep missing.
 #[derive(Default)]
 pub struct Recs {
@@ -166,7 +186,12 @@ impl Recs {
     /// last), fetched and marked as a recommendation; None if nothing worked. Recs and ✕ tracks never seed,
     /// so taste does not drift rec -> rec; a playing playlist thus seeds its own recommendations.
     pub async fn next(&mut self, tg: &Tg, store: &Store, seeds: &[Track]) -> Result<Option<Track>> {
-        let own: Vec<&Track> = seeds.iter().filter(|t| !t.rec && !t.disliked).collect();
+        // the caller passes what is really "own" in the queue (a song found through search is rec in the db but a
+        // deliberate pick, so it may seed); only ✕ is left out here
+        let own: Vec<&Track> = seeds.iter().filter(|t| !t.disliked).collect();
+        if own.is_empty() {
+            return Ok(None);
+        }
         let seeds = &own[own.len().saturating_sub(3)..];
         let key = crate::keys::lastfm().ok_or_else(|| anyhow!("no Last.fm key: build with LASTFM_API_KEY"))?;
         let mut bots = sources(tg, store).await?;
@@ -175,12 +200,21 @@ impl Recs {
         }
         // bots that missed a lot go last
         bots.sort_by_key(|(id, _)| self.misses.get(id).copied().unwrap_or(0) >= 3);
-        let owned: HashSet<_> = store.all_tracks().await?.iter().flat_map(|t| artists::split(&t.performer).into_iter().map(move |a| (artists::key(&a), tkey(&t.title)))).collect();
+        let owned: HashSet<_> = store
+            .all_tracks()
+            .await?
+            .iter()
+            .flat_map(|t| {
+                let (performer, title) = tagged(t);
+                artists::split(&performer).into_iter().map(move |a| (artists::key(&a), tkey(&title)))
+            })
+            .collect();
         // shortcut: at most 4 Last.fm candidates per call so one slot never stalls for minutes
         let mut attempts = 0;
         for seed in seeds.iter().rev() {
-            let Some(artist) = artists::split(&seed.performer).into_iter().next() else { continue };
-            let (k, a, t) = (key.clone(), artist.clone(), seed.title.clone());
+            let (performer, title) = tagged(seed);
+            let Some(artist) = artists::split(&performer).into_iter().next() else { continue };
+            let (k, a, t) = (key.clone(), artist.clone(), title);
             // Last.fm hiccup on one seed: try the next one
             let Ok(cands) = tokio::task::spawn_blocking(move || similar(&k, &a, &t, 30)).await? else { continue };
             for c in cands {
@@ -237,6 +271,9 @@ mod tests {
         assert!(!matches(&w, "Imagine Dragons", "Thunder", Some(204)));
         assert!(!matches(&w, "Other Band", "Believer", Some(204)));
         assert!(!matches(&w, "", "Believer", None));
+        assert!(!matches(&w, "Imagine Dragons", "Believer (Live)", Some(204))); // another recording
+        assert!(!matches(&w, "Imagine Dragons", "Believer - Slowed + Reverb", None));
+        assert!(matches(&c("Imagine Dragons", "Believer (Live)", 0), "Imagine Dragons", "Believer - Live", None));
     }
 
     #[test]
@@ -252,6 +289,7 @@ mod tests {
         assert_eq!(start_payload("https://t.me/bot?x=1&start=abc"), Some("abc".into()));
         assert_eq!(start_payload("https://www.deezer.com/track/1?start=x"), None);
         assert_eq!(start_payload("https://t.me/bot?start="), None);
+        assert_eq!(start_payload("https://evilt.me/bot?start=abc"), None);
     }
 
     #[test]

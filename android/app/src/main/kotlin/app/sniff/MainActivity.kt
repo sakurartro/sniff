@@ -13,7 +13,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        if (android.os.Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 0)
+        // asked once, not on every rotation
+        if (android.os.Build.VERSION.SDK_INT >= 33 && savedInstanceState == null &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 0)
         setContent {
             val vm = viewModel<Vm>()
             val dark = isDark(vm.mode)

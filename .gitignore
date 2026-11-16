@@ -6,3 +6,8 @@ target/
 *.jks
 *.keystore
 DESIGN.md
+.claude/
+*.apk
+*.session*
+*-wal
+*-shm

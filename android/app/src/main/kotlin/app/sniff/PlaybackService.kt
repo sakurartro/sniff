@@ -34,7 +34,7 @@ object Shared {
         ))
         .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
         .setHandleAudioBecomingNoisy(true)
-        .setWakeMode(C.WAKE_MODE_LOCAL)
+        .setWakeMode(C.WAKE_MODE_NETWORK) // the bytes come over the network: keep Wi-Fi awake too
         .build().also { exo = it }
 }
 

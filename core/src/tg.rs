@@ -35,15 +35,16 @@ pub struct Tg {
 }
 
 impl Tg {
-    pub async fn connect(session_file: impl AsRef<Path>, keys: ApiKeys) -> Result<Self> {
+    /// `device` = (model, OS version) shown in Telegram's «Active sessions».
+    pub async fn connect(session_file: impl AsRef<Path>, keys: ApiKeys, device: (&str, &str)) -> Result<Self> {
         let session = Arc::new(SqliteSession::open(session_file.as_ref()).await?);
         let SenderPool { runner, handle, .. } = SenderPool::with_configuration(
             Arc::clone(&session),
             keys.id,
             // Telegram silently withholds login codes for the default library fingerprint; explicit params fix it.
             ConnectionParams {
-                device_model: "Linux".into(),
-                system_version: "Arch Linux".into(),
+                device_model: device.0.into(),
+                system_version: device.1.into(),
                 app_version: "1.0".into(),
                 lang_code: "ru".into(),
                 system_lang_code: "ru-RU".into(),
@@ -609,6 +610,7 @@ fn track_of(m: &Message, chat_id: i64) -> Option<Track> {
         liked: false,
         rec: false,
         disliked: false,
+        date: m.date().as_second(),
     })
 }
 

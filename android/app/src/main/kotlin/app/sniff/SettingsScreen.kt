@@ -121,7 +121,7 @@ private fun CacheSection(vm: Vm) {
                 // applied on Done only: per keystroke, typing "10" would first evict down to 1 GB
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = {
-                    text.replace(',', '.').toFloatOrNull()?.takeIf { it >= 0.1f }?.let { slide = it; vm.setCacheLimit(it) }
+                    text.replace(',', '.').toFloatOrNull()?.takeIf { it >= 0.5f }?.coerceAtMost(32f)?.let { slide = it; vm.setCacheLimit(it) }
                     text = gb(vm.cacheGb); focus.clearFocus()
                 }),
                 colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent),

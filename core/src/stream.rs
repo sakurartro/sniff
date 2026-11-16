@@ -146,19 +146,30 @@ impl Streams {
                 done => return Ok(done),
             },
         };
+        let mut abandoned = None;
         {
             let mut m = self.m.lock().unwrap();
             match mode {
                 Mode::Fg if m.fg != Some(id) => {
-                    // the previous foreground track keeps downloading, in the background queue
+                    // the previous foreground track keeps downloading in the background queue only if it is well
+                    // under way; a track skipped at the start is dropped (its .part/.map resume if played again)
                     if let Some(old) = m.fg.replace(id).filter(|o| m.active.contains_key(o) && !m.bg.contains(o)) {
-                        m.bg.push_back(old);
+                        let d = m.active[&old].clone();
+                        let (have, all) = { let s = d.st.lock().unwrap(); (s.done.iter().filter(|x| **x).count(), s.done.len()) };
+                        if have * 2 >= all {
+                            m.bg.push_back(old);
+                        } else {
+                            abandoned = Some(d);
+                        }
                     }
                     m.bg.retain(|x| *x != id);
                 }
                 Mode::Next if m.fg != Some(id) && !m.bg.contains(&id) => m.bg.push_front(id),
                 _ => {}
             }
+        }
+        if let Some(d) = abandoned {
+            self.fail(&d, "abandoned".into());
         }
         self.sched.notify_waiters();
         Ok(Open::Live(dl))
@@ -235,7 +246,11 @@ impl Streams {
                 n.await;
                 continue;
             }
-            let Some(c) = dl.claim() else { return };
+            let Some(c) = dl.claim() else {
+                // every chunk is taken: stay, since a failed one is released again and somebody must retry it
+                let _ = tokio::time::timeout(Duration::from_secs(2), n.as_mut()).await;
+                continue;
+            };
             let media = dl.media.lock().unwrap().clone();
             let want = (dl.size - c as u64 * CH).min(CH) as usize;
             let r = async {
@@ -256,7 +271,7 @@ impl Streams {
                     dl.st.lock().unwrap().busy[c] = false;
                     // FLOOD_WAIT_N: Telegram says exactly how long to wait; that is not a failure (grammers already sleeps itself for short ones)
                     if let Some(grammers_client::InvocationError::Rpc(r)) = e.downcast_ref::<grammers_client::InvocationError>() {
-                        if r.name == "FLOOD_WAIT" {
+                        if r.code == 420 || r.name.starts_with("FLOOD_") {
                             tokio::time::sleep(Duration::from_secs(r.value.unwrap_or(5).min(600) as u64 + 1)).await; // shortcut: waits cap at 10 min, then retries as usual
                             continue;
                         }

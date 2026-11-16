@@ -5,6 +5,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!-- tg.session is a full login: it must never leave the phone through Auto Backup, device transfer or adb backup -->
     <application
         android:allowBackup="false"
@@ -13,7 +14,7 @@
         android:label="sniff"
         android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.NoActionBar">
-        <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
+        <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="portrait" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

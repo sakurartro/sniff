@@ -26,7 +26,8 @@ impl ApiKeys {
 
 /// Last.fm API key: LASTFM_API_KEY at runtime, else the one embedded at build time.
 pub fn lastfm() -> Option<String> {
-    std::env::var("LASTFM_API_KEY").ok().or_else(|| Some(dec(LASTFM))).filter(|k| !k.is_empty())
+    // an empty variable counts as unset, so it does not hide the embedded key
+    std::env::var("LASTFM_API_KEY").ok().filter(|k| !k.is_empty()).or_else(|| Some(dec(LASTFM))).filter(|k| !k.is_empty())
 }
 
 #[cfg(test)]

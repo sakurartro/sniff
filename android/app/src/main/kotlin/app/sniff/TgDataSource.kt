@@ -3,6 +3,8 @@ package app.sniff
 import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.media3.common.C
+import androidx.media3.common.PlaybackException
+import androidx.media3.datasource.DataSourceException
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.BaseDataSource
 import androidx.media3.datasource.DataSpec
@@ -23,7 +25,8 @@ class TgDataSource : BaseDataSource(false) {
         transferInitializing(dataSpec)
         val size = try { runBlocking { Shared.core.streamStart(id, true) }.toLong() } catch (e: Exception) { throw IOException(e) }
         pos = dataSpec.position
-        left = if (dataSpec.length == C.LENGTH_UNSET.toLong()) size - pos else dataSpec.length
+        if (pos > size) { uri = null; throw DataSourceException(PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE) }
+        left = if (dataSpec.length == C.LENGTH_UNSET.toLong()) size - pos else minOf(dataSpec.length, size - pos)
         transferStarted(dataSpec)
         return left
     }

@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
         (Ok(id), Ok(hash)) => Some(ApiKeys { id: id.parse()?, hash }),
         _ => None,
     };
-    let tg = Tg::connect(dir.join("session.sqlite"), ApiKeys::resolve(user)?).await?;
+    let tg = Tg::connect(dir.join("session.sqlite"), ApiKeys::resolve(user)?, ("Linux", "Arch Linux")).await?;
 
     match cmd {
         "login-link" => {
