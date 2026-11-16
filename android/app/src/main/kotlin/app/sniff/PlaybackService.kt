@@ -21,9 +21,6 @@ object Shared {
     lateinit var core: App // read by TgDataSource, set by Vm
     /** The core is one per process: a new Vm (activity reopened while the service lives) must reuse it, not open a second one. */
     fun hasCore() = ::core.isInitialized
-    // shortcut: queue lives in Vm; notification next/prev work only while the Vm is alive, move the queue into the service to fix
-    var onNext: (() -> Unit)? = null
-    var onPrev: (() -> Unit)? = null
 
     @OptIn(UnstableApi::class)
     fun player(c: Context): ExoPlayer = exo ?: ExoPlayer.Builder(c.applicationContext)
@@ -57,8 +54,11 @@ class PlaybackService : MediaSessionService() {
                 .add(Player.COMMAND_SEEK_TO_NEXT).add(Player.COMMAND_SEEK_TO_PREVIOUS).build()
             override fun isCommandAvailable(command: Int) =
                 command == Player.COMMAND_SEEK_TO_NEXT || command == Player.COMMAND_SEEK_TO_PREVIOUS || super.isCommandAvailable(command)
-            override fun seekToNext() { Shared.onNext?.invoke() }
-            override fun seekToPrevious() { Shared.onPrev?.invoke() }
+            // the queue is process-wide ([Playback]): these work with or without an activity
+            override fun seekToNext() { Playback.next() }
+            override fun seekToPrevious() { Playback.prev() }
+            override fun seekToNextMediaItem() { Playback.next() }
+            override fun seekToPreviousMediaItem() { Playback.prev() }
         }
         session = MediaSession.Builder(this, p).setCallback(OnlyOurs).build().also { addSession(it) }
     }
@@ -74,6 +74,7 @@ class PlaybackService : MediaSessionService() {
         session?.release()
         // the player is one per process and a new Vm picks it up again: stop it, do not release it
         Shared.player(this).run { stop(); clearMediaItems() }
+        Playback.reset()
         session = null
         super.onDestroy()
     }
